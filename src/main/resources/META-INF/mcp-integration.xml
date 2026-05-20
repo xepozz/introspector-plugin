@@ -1,0 +1,9 @@
+<idea-plugin>
+    <depends optional="true" config-file="kotlin-exec.xml">org.jetbrains.kotlin</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <mcpServer.mcpToolset implementation="com.github.xepozz.introspectorplugin.tools.UiInspectorToolset"/>
+        <mcpServer.mcpToolset implementation="com.github.xepozz.introspectorplugin.tools.ScreenshotToolset"/>
+        <mcpServer.mcpToolset implementation="com.github.xepozz.introspectorplugin.tools.ArchitectureToolset"/>
+    </extensions>
+</idea-plugin>

@@ -1,19 +1,39 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
     <id>com.github.xepozz.introspectorplugin</id>
-    <name>introspector-plugin</name>
+    <name>IDE Introspect MCP</name>
     <vendor>xepozz</vendor>
     <description><![CDATA[
-        <p><b>introspector-plugin</b> is a repository that provides a pure template to make it easier to create a new plugin project.</p>
-        <p>The main goal of this template is to speed up the setup phase of plugin development for both new and experienced developers by preconfiguring the project scaffold and CI, linking to the proper documentation pages, and keeping everything organized.</p>
+        <p><b>IDE Introspect MCP</b> exposes the running IntelliJ IDE to MCP clients (Claude, Cursor, Codex, ...) so an agent can:</p>
+        <ul>
+            <li>Read the Swing UI tree, find components by name/coordinates/XPath, capture screenshots</li>
+            <li>Enumerate plugins and extension points live from this very IDE instance</li>
+            <li>Execute arbitrary Kotlin in the IDE JVM (opt-in, per-call confirmation)</li>
+        </ul>
+        <p>Ships with a Platform Explorer tool window for interactive plugin-architecture browsing without an MCP client.</p>
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
 
-    <resource-bundle>messages.MyBundle</resource-bundle>
+    <depends optional="true" config-file="mcp-integration.xml">com.intellij.mcpServer</depends>
 
     <extensions defaultExtensionNs="com.intellij">
-        <toolWindow factoryClass="com.github.xepozz.introspectorplugin.toolWindow.MyToolWindowFactory" id="MyToolWindow"/>
-        <postStartupActivity implementation="com.github.xepozz.introspectorplugin.startup.MyProjectActivity" />
+        <toolWindow id="Platform Explorer"
+                    anchor="right"
+                    icon="AllIcons.Nodes.Plugin"
+                    factoryClass="com.github.xepozz.introspectorplugin.toolwindow.PlatformExplorerToolWindowFactory"/>
+
+        <applicationService
+            serviceImplementation="com.github.xepozz.introspectorplugin.core.ComponentRegistry"/>
+        <applicationService
+            serviceImplementation="com.github.xepozz.introspectorplugin.core.PluginInventory"/>
+        <applicationService
+            serviceImplementation="com.github.xepozz.introspectorplugin.exec.ExecSettings"/>
+
+        <applicationConfigurable
+            instance="com.github.xepozz.introspectorplugin.exec.ExecSettingsConfigurable"
+            id="com.github.xepozz.introspectorplugin.exec.settings"
+            displayName="IDE Introspect MCP"
+            parentId="tools"/>
     </extensions>
 </idea-plugin>

@@ -1,0 +1,31 @@
+package com.github.xepozz.introspectorplugin.toolwindow
+
+import com.github.xepozz.introspectorplugin.model.ExtensionInfo
+import com.github.xepozz.introspectorplugin.model.ExtensionPointInfo
+import com.github.xepozz.introspectorplugin.model.PluginDependencyInfo
+import com.github.xepozz.introspectorplugin.model.PluginInfo
+
+/**
+ * Sealed hierarchy of tree node user-objects. Renderers and selection handlers switch on these.
+ */
+sealed class PlatformExplorerNode {
+    abstract val displayName: String
+
+    data class Root(override val displayName: String) : PlatformExplorerNode()
+    data class PluginNode(val plugin: PluginInfo) : PlatformExplorerNode() {
+        override val displayName: String get() = "${plugin.name} [${plugin.id}]" +
+            if (plugin.isBundled) " [bundled]" else ""
+    }
+    data class GroupNode(override val displayName: String, val count: Int) : PlatformExplorerNode()
+    data class ExtensionPointNode(val ep: ExtensionPointInfo) : PlatformExplorerNode() {
+        override val displayName: String get() = ep.name + " [${ep.kind}] (${ep.extensionsCount})"
+    }
+    data class ExtensionNode(val extension: ExtensionInfo) : PlatformExplorerNode() {
+        override val displayName: String get() = extension.implementationClass ?: "(no impl class)"
+    }
+    data class DependencyNode(val dep: PluginDependencyInfo) : PlatformExplorerNode() {
+        override val displayName: String get() = dep.pluginId +
+            if (dep.optional) " (optional)" else " (required)"
+    }
+    data class LoadingNode(override val displayName: String = "Loading…") : PlatformExplorerNode()
+}
