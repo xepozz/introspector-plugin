@@ -39,7 +39,7 @@ Re-run `./gradlew generateToolsDoc` (or any `./gradlew build`) to refresh.
 
 ## `arch.find_extenders_of`
 
-*ArchitectureToolset — `src/main/kotlin/com/github/xepozz/introspectorplugin/tools/ArchitectureToolset.kt`*
+*ArchitectureToolset*
 
 Reverse-lookup: "who implements / plugs into X?". Given an EP name or a fully-qualified
 class, returns every extension that registers against it. Use targetKind="auto" (default)
@@ -74,7 +74,7 @@ Examples:
 
 ## `arch.get_plugin_details`
 
-*ArchitectureToolset — `src/main/kotlin/com/github/xepozz/introspectorplugin/tools/ArchitectureToolset.kt`*
+*ArchitectureToolset*
 
 Returns the full inventory for one plugin: its metadata (version, vendor, deps),
 every EP it declares, every extension it contributes (across all EPs), and optionally
@@ -113,7 +113,7 @@ Caveats:
 
 ## `arch.list_extension_points`
 
-*ArchitectureToolset — `src/main/kotlin/com/github/xepozz/introspectorplugin/tools/ArchitectureToolset.kt`*
+*ArchitectureToolset*
 
 Enumerates Extension Points (EPs) live from this specific IDE instance — bundled
 platform EPs plus any contributed by installed plugins. Reflects the *actual* running
@@ -145,8 +145,8 @@ Vanilla IDEA Community has ≥1000 EPs at application area — narrow with nameC
 | Name | Type | Description |
 | --- | --- | --- |
 | `area` | `String` | 'application' (most common), 'project' (per-project EPs), or 'both'. Default 'application'. |
-| `declaredByPlugin` | `String?` | Restrict to EPs whose declaring plugin id matches exactly, e.g. 'com.intellij' or 'com.jetbrains.php'. |
-| `nameContains` | `String?` | Case-insensitive substring filter on EP name, e.g. 'toolWindow' or 'configurable'. Strongly recommended — full list can be 1000+. |
+| `declaredByPlugin` | `String` | Restrict to EPs whose declaring plugin id matches exactly, e.g. 'com.intellij' or 'com.jetbrains.php'. |
+| `nameContains` | `String` | Case-insensitive substring filter on EP name, e.g. 'toolWindow' or 'configurable'. Strongly recommended — full list can be 1000+. |
 | `onlyDynamic` | `Boolean` | Restrict to EPs marked dynamic=true (hot-swappable via dynamic plugins). |
 | `limit` | `Int` | Cap on returned EPs. Default 500. |
 
@@ -156,7 +156,7 @@ Vanilla IDEA Community has ≥1000 EPs at application area — narrow with nameC
 
 ## `arch.list_extensions_for_ep`
 
-*ArchitectureToolset — `src/main/kotlin/com/github/xepozz/introspectorplugin/tools/ArchitectureToolset.kt`*
+*ArchitectureToolset*
 
 Lists every extension registered against one specific Extension Point — i.e. every
 plugin's contribution to that hook. For each extension you get the user's
@@ -193,7 +193,7 @@ ToolWindowFactory with its anchor, id, icon, and contributing plugin.
 
 ## `arch.list_plugins`
 
-*ArchitectureToolset — `src/main/kotlin/com/github/xepozz/introspectorplugin/tools/ArchitectureToolset.kt`*
+*ArchitectureToolset*
 
 Lists every plugin installed in this IDE instance, with id, name, version, vendor,
 bundled/enabled flags, sinceBuild/untilBuild compatibility range, declared dependencies,
@@ -215,7 +215,7 @@ bundled plugins — set includeBundled=false to focus on third-party.
 | --- | --- | --- |
 | `includeBundled` | `Boolean` | Include plugins bundled with the IDE. Default true. Set false to focus on third-party plugins. |
 | `includeDisabled` | `Boolean` | Include plugins the user has disabled. Default false (enabled only). |
-| `nameOrIdContains` | `String?` | Case-insensitive substring filter on plugin name OR plugin id. |
+| `nameOrIdContains` | `String` | Case-insensitive substring filter on plugin name OR plugin id. |
 
 **Returns:** `ListPluginsResponse`
 
@@ -223,7 +223,7 @@ bundled plugins — set includeBundled=false to focus on third-party.
 
 ## `exec.execute_kotlin_in_ide`
 
-*ExecToolset — `src/main/kotlin/com/github/xepozz/introspectorplugin/tools/ExecToolset.kt`*
+*ExecToolset*
 
 Compiles and executes arbitrary Kotlin code inside the running IDE JVM. The escape
 hatch for whatever the pre-built ui.* / arch.* / screenshot.* tools cannot do.
@@ -301,7 +301,7 @@ EXAMPLES:
 
 ## `screenshot.capture`
 
-*ScreenshotToolset — `src/main/kotlin/com/github/xepozz/introspectorplugin/tools/ScreenshotToolset.kt`*
+*ScreenshotToolset*
 
 Captures a PNG screenshot of part or all of the IDE and returns it as a base64-encoded
 string inside the response payload. The image is auto-downscaled (halving passes) until
@@ -334,7 +334,7 @@ Examples:
 | Name | Type | Description |
 | --- | --- | --- |
 | `target` | `String` | 'component' \| 'active_frame' \| 'all_frames' \| 'screen'. See tool description for differences (only 'screen' includes popups). |
-| `componentId` | `String?` | Required when target='component'. Stable id from a prior ui.find_by_* or ui.get_tree call. |
+| `componentId` | `String` | Required when target='component'. Stable id from a prior ui.find_by_* or ui.get_tree call. |
 | `format` | `String` | Image format. Only 'png' supported in v1. |
 | `scale` | `Double` | Post-render scale factor applied before encoding. Use 0.5 or 0.25 to halve/quarter for token budget. |
 
@@ -344,7 +344,7 @@ Examples:
 
 ## `screenshot.crop`
 
-*ScreenshotToolset — `src/main/kotlin/com/github/xepozz/introspectorplugin/tools/ScreenshotToolset.kt`*
+*ScreenshotToolset*
 
 Returns a rectangular crop of either the active IDE frame or the virtual desktop.
 Cheaper than screenshot.capture+downscale when you only need a small region (e.g.
@@ -383,7 +383,7 @@ base64, warnings:string[] }.
 
 ## `ui.find_by_coordinates`
 
-*UiInspectorToolset — `src/main/kotlin/com/github/xepozz/introspectorplugin/tools/UiInspectorToolset.kt`*
+*UiInspectorToolset*
 
 Returns the deepest visible component at point (x, y) — equivalent to clicking that
 pixel and seeing which Swing component would receive the event. With
@@ -414,7 +414,7 @@ component and (if requested) matches[1..N] are its ancestors up to the window ro
 
 ## `ui.find_by_name`
 
-*UiInspectorToolset — `src/main/kotlin/com/github/xepozz/introspectorplugin/tools/UiInspectorToolset.kt`*
+*UiInspectorToolset*
 
 Locates Swing components by their text-bearing attributes: `name` (programmatic),
 `text` (button/label caption), `accessibleName` (a11y label), `toolTipText`. Walks the
@@ -441,7 +441,7 @@ Example: query="Run", matchMode="exact", searchIn=["text"] → finds the Run too
 | `query` | `String` | Search string. Treated as substring (contains), exact text, or regex per matchMode. |
 | `matchMode` | `String` | 'exact' \| 'contains' (default) \| 'regex'. |
 | `caseSensitive` | `Boolean` | Case sensitivity for 'exact'/'contains'. Ignored for 'regex' (use (?i) for case-insensitive regex). |
-| `searchIn` | `List<String>` | Which fields to test. Default ['name','text','accessibleName','toolTipText']. Narrow it to speed things up. |
+| `searchIn` | `List` | Which fields to test. Default ['name','text','accessibleName','toolTipText']. Narrow it to speed things up. |
 | `limit` | `Int` | Cap on returned matches. Default 50. |
 
 **Returns:** `FindComponentsResponse`
@@ -450,7 +450,7 @@ Example: query="Run", matchMode="exact", searchIn=["text"] → finds the Run too
 
 ## `ui.find_by_xpath`
 
-*UiInspectorToolset — `src/main/kotlin/com/github/xepozz/introspectorplugin/tools/UiInspectorToolset.kt`*
+*UiInspectorToolset*
 
 Finds components by an XPath subset compatible with intellij-ui-test-robot — handy
 when ui.find_by_name's free-text match is too loose and you need to filter by class
@@ -490,7 +490,7 @@ Returns: { matches: ComponentInfo[], total: int }.
 
 ## `ui.get_properties`
 
-*UiInspectorToolset — `src/main/kotlin/com/github/xepozz/introspectorplugin/tools/UiInspectorToolset.kt`*
+*UiInspectorToolset*
 
 Returns the complete property bag for one previously-located component, identified
 by its id. Includes basic Swing fields (class, name, bounds, visibility), accessible
@@ -519,13 +519,13 @@ Properties are key-value pairs like "bounds": "10,20 100x30", "accessibleName": 
 | `includeClientProperties` | `Boolean` | Include JComponent client properties (UI hints stored via putClientProperty). |
 | `includeAccessibleContext` | `Boolean` | Include accessibleContext (a11y name/role/description). Cheap; leave on unless responses get noisy. |
 
-**Returns:** `PropertiesResponse`
+**Returns:** `UiInspectorToolset$PropertiesResponse`
 
 ---
 
 ## `ui.get_tree`
 
-*UiInspectorToolset — `src/main/kotlin/com/github/xepozz/introspectorplugin/tools/UiInspectorToolset.kt`*
+*UiInspectorToolset*
 
 Returns the IDE's live Swing component tree (BFS, capped by maxDepth). Each node
 carries a stable id ("c_xxxxxxxx") you can pass to ui.get_properties or
@@ -558,7 +558,7 @@ bounds {x,y,width,height}, visible, enabled, text, toolTipText, properties[], ch
 | Name | Type | Description |
 | --- | --- | --- |
 | `maxDepth` | `Int` | Max BFS depth. Default 12. Keep ≤15 for the full frame; full IDE trees easily exceed 5000 nodes. |
-| `rootSelector` | `String?` | Scope filter: 'frame', 'dialog', 'tool_window:<id>' (e.g. 'tool_window:Project'), or null for everything visible. |
+| `rootSelector` | `String` | Scope filter: 'frame', 'dialog', 'tool_window:<id>' (e.g. 'tool_window:Project'), or null for everything visible. |
 | `includeInvisible` | `Boolean` | Include invisible components (those with isVisible()==false). Off by default. |
 | `includeProperties` | `Boolean` | Attach UI-Inspector-style property bag to every node. Expensive — prefer ui.get_properties for a single id. |
 | `truncatePropertyValueAt` | `Int` | Maximum character length for any single property value before truncation. |
