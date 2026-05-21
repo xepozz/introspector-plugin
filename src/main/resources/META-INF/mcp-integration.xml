@@ -1,5 +1,6 @@
 <idea-plugin>
     <depends optional="true" config-file="kotlin-exec.xml">org.jetbrains.kotlin</depends>
+    <depends optional="true" config-file="java-introspect.xml">com.intellij.modules.java</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <mcpServer.mcpToolset implementation="com.github.xepozz.introspectorplugin.tools.UiInspectorToolset"/>

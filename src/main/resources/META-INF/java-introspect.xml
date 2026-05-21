@@ -1,0 +1,11 @@
+<!--
+  Loaded only when both com.intellij.mcpServer AND com.intellij.modules.java are present.
+  The Java module ships with IntelliJ IDEA (Community + Ultimate) and Android Studio, but
+  NOT with PyCharm CE, RubyMine, GoLand, etc. — in those IDEs this file is skipped and the
+  code.* tools simply don't appear, keeping the rest of the plugin functional.
+-->
+<idea-plugin>
+    <extensions defaultExtensionNs="com.intellij">
+        <mcpServer.mcpToolset implementation="com.github.xepozz.introspectorplugin.tools.CodeSourceToolset"/>
+    </extensions>
+</idea-plugin>

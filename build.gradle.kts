@@ -30,6 +30,10 @@ dependencies {
     intellijPlatform {
         intellijIdea("2025.2.6.2")
         bundledPlugin("org.jetbrains.kotlin")
+        // com.intellij.java ships the Java PSI (PsiClass, JavaPsiFacade, ClassFileDecompilers).
+        // Required at compile time for code.* tools; at runtime they only load when the IDE
+        // includes the Java module — gated via META-INF/java-introspect.xml's optional depends.
+        bundledPlugin("com.intellij.java")
         plugin("com.intellij.mcpServer", "252.28238.29")
         testFramework(TestFrameworkType.Platform)
     }

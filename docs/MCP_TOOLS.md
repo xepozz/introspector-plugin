@@ -6,564 +6,168 @@ Generated from the `@McpTool` / `@McpDescription` annotations on the `McpToolset
 classes by a KSP processor (`doc-processor/`) that runs as part of `compileKotlin`.
 To refresh: any `./gradlew build` (or `./gradlew compileKotlin`) regenerates this file.
 
-**Total tools:** 13
+**Total tools:** 4
 
 ## Tools by group
 
-### `arch.*` (5)
+### `code.*` (4)
 
-- [`arch.find_extenders_of`](#arch-findextendersof)
-- [`arch.get_plugin_details`](#arch-getplugindetails)
-- [`arch.list_extension_points`](#arch-listextensionpoints)
-- [`arch.list_extensions_for_ep`](#arch-listextensionsforep)
-- [`arch.list_plugins`](#arch-listplugins)
-
-### `exec.*` (1)
-
-- [`exec.execute_kotlin_in_ide`](#exec-executekotlininide)
-
-### `screenshot.*` (2)
-
-- [`screenshot.capture`](#screenshot-capture)
-- [`screenshot.crop`](#screenshot-crop)
-
-### `ui.*` (5)
-
-- [`ui.find_by_coordinates`](#ui-findbycoordinates)
-- [`ui.find_by_name`](#ui-findbyname)
-- [`ui.find_by_xpath`](#ui-findbyxpath)
-- [`ui.get_properties`](#ui-getproperties)
-- [`ui.get_tree`](#ui-gettree)
+- [`code.attach_sources`](#code-attachsources)
+- [`code.find_class`](#code-findclass)
+- [`code.get_source`](#code-getsource)
+- [`code.list_members`](#code-listmembers)
 
 ---
 
-## `arch.find_extenders_of`
+## `code.attach_sources`
 
-*ArchitectureToolset*
+*CodeSourceToolset*
 
-Reverse-lookup: "who implements / plugs into X?". Given an EP name or a fully-qualified
-class, returns every extension that registers against it. Use targetKind="auto" (default)
-to let the tool decide — it first tries the target as an EP name; if no such EP exists,
-it scans all EPs for extensions whose implementationClass matches.
+Triggers the IDE's built-in action(s) to download sources for the library that owns the
+given class. Best-effort wrapper around ActionManager — the available action depends on
+the build system (Maven, Gradle, plain libraries).
 
-Use this when: a user asks "how is X done in IntelliJ?", "who provides Y?", "what plugin
-adds the database tool window?" — i.e. starting from a known interface/EP and looking
-for concrete implementations.
-
-Do NOT use this when: you already know the EP name and just want its extensions
-(arch.list_extensions_for_ep is more direct), or you have a plugin id
-(arch.get_plugin_details).
-
-Returns: { extensions: ExtensionInfo[], total: int }.
-
-Examples:
-  target="com.intellij.toolWindow"                       — every ToolWindowFactory
-  target="com.intellij.openapi.fileTypes.FileTypeFactory" — every FileTypeFactory impl
-  target="com.intellij.codeInsight.intention.IntentionAction" — every IntentionAction impl
-
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `target` | `String` | EP name (e.g. 'com.intellij.toolWindow') or fully-qualified class/interface name. Use the kind that matches what you have. |
-| `targetKind` | `String` | 'extension_point' (treat target as EP name), 'interface' (treat as class), or 'auto' (default — EP first, fall back to class scan). |
-
-**Returns:** `ListExtensionsResponse`
-
----
-
-## `arch.get_plugin_details`
-
-*ArchitectureToolset*
-
-Returns the full inventory for one plugin: its metadata (version, vendor, deps),
-every EP it declares, every extension it contributes (across all EPs), and optionally
-all its action ids.
-
-Use this when: you want to understand what a single plugin actually does, what hooks
-it exposes for others to extend, or what files (factories, services) it ships. Common
-pattern: arch.list_plugins → arch.get_plugin_details (with the id).
-
-Do NOT use this when: you want extensions across multiple plugins
-(arch.list_extensions_for_ep or arch.find_extenders_of), or just plugin counts
-(arch.list_plugins).
-
-Returns: { plugin: PluginInfo, declaredExtensionPoints: ExtensionPointInfo[],
-registeredExtensions: ExtensionInfo[], actions: string[] }.
-
-Caveats:
-  - includeActions=false by default — populating action ids touches the action
-    manager and can be slow for plugins with hundreds of actions (e.g. com.intellij).
-  - For large plugins (com.intellij itself owns ~1000 EPs and contributes ~500
-    extensions) the response can be huge — consider whether the narrower
-    arch.list_extensions_for_ep is what you actually need.
-
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `pluginId` | `String` | Plugin id, e.g. 'com.intellij.java', 'org.jetbrains.kotlin', 'com.github.xepozz.introspectorplugin'. Get ids from arch.list_plugins. |
-| `includeDeclaredExtensionPoints` | `Boolean` | Include EPs this plugin declares (i.e. extensibility hooks it offers to others). Default true. |
-| `includeRegisteredExtensions` | `Boolean` | Include extensions this plugin contributes to other plugins' EPs. Default true. |
-| `includeActions` | `Boolean` | Include the plugin's action ids. Default false — slow on plugins with many actions (com.intellij has ~3000). |
-
-**Returns:** `PluginDetails`
-
----
-
-## `arch.list_extension_points`
-
-*ArchitectureToolset*
-
-Enumerates Extension Points (EPs) live from this specific IDE instance — bundled
-platform EPs plus any contributed by installed plugins. Reflects the *actual* running
-state, not what the docs or Marketplace say, so disabled plugins / dev builds /
-custom installs are accurate.
-
-Use this when: a user (or a plugin-development task) asks "what extension points are
-available?", "is there a hook for X?", "what EPs does plugin Y own?". This is the
-entry point for plugin-architecture exploration.
-
-Follow-up tools:
-  - arch.list_extensions_for_ep   — who has plugged into a given EP
-  - arch.find_extenders_of        — reverse search by EP name or class
-  - arch.get_plugin_details       — full inventory for one plugin
-
-Do NOT use this to: count installed plugins (use arch.list_plugins), or to find
-classes implementing an interface unrelated to EPs (the IDE doesn't index them
-that way — try arch.find_extenders_of with targetKind="interface").
-
-Returns: { extensionPoints: ExtensionPointInfo[], total: int } where each EP carries
-name, kind ('INTERFACE'|'BEAN_CLASS'), interfaceOrBeanClass (FQCN), declaredByPluginId,
-declaredByPluginName, isDynamic, extensionsCount, area ('application'|'project').
-
-Vanilla IDEA Community has ≥1000 EPs at application area — narrow with nameContains
-("toolWindow", "configurable", etc.) before reading the response.
-
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `area` | `String` | 'application' (most common), 'project' (per-project EPs), or 'both'. Default 'application'. |
-| `declaredByPlugin` | `String?` | Restrict to EPs whose declaring plugin id matches exactly, e.g. 'com.intellij' or 'com.jetbrains.php'. |
-| `nameContains` | `String?` | Case-insensitive substring filter on EP name, e.g. 'toolWindow' or 'configurable'. Strongly recommended — full list can be 1000+. |
-| `onlyDynamic` | `Boolean` | Restrict to EPs marked dynamic=true (hot-swappable via dynamic plugins). |
-| `limit` | `Int` | Cap on returned EPs. Default 500. |
-
-**Returns:** `ListExtensionPointsResponse`
-
----
-
-## `arch.list_extensions_for_ep`
-
-*ArchitectureToolset*
-
-Lists every extension registered against one specific Extension Point — i.e. every
-plugin's contribution to that hook. For each extension you get the user's
-implementation class, the contributing plugin, and all XML attributes from the
-original declaration (factoryClass, anchor, id, …).
-
-Use this when: you've identified an EP of interest (via arch.list_extension_points)
-and want to see who plugs into it — e.g. "what tool windows are registered?", "what
-inspections does plugin X add?".
-
-Do NOT use this when: you want extensions across multiple EPs by some other criterion
-(use arch.find_extenders_of or arch.get_plugin_details).
-
-Returns: { extensions: ExtensionInfo[], total: int } where each ExtensionInfo has
-extensionPointName, implementationClass (bean class for BEAN_CLASS EPs, user class
-for INTERFACE EPs), effectiveClass (user's actual class extracted from XML
-attributes like factoryClass/instance/serviceImplementation/implementation),
-providedByPluginId, providedByPluginName, additionalAttributes (full XML attribute
-map: id, anchor, icon, etc.).
-
-Example: extensionPointName="com.intellij.toolWindow" → returns every registered
-ToolWindowFactory with its anchor, id, icon, and contributing plugin.
-
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `extensionPointName` | `String` | Fully qualified EP name as returned by arch.list_extension_points (e.g. 'com.intellij.toolWindow', 'com.intellij.applicationConfigurable'). |
-| `limit` | `Int` | Cap on returned extensions. Default 200. |
-
-**Returns:** `ListExtensionsResponse`
-
----
-
-## `arch.list_plugins`
-
-*ArchitectureToolset*
-
-Lists every plugin installed in this IDE instance, with id, name, version, vendor,
-bundled/enabled flags, sinceBuild/untilBuild compatibility range, declared dependencies,
-and counts of declared EPs / registered extensions. Reflects the live PluginManager
-state — disabled or third-party plugins included by default.
-
-Use this when: you need to know what's installed, find a plugin by partial name to
-get its id, or audit version / compatibility.
-
-Do NOT use this when: you want what the plugin *does* (extensions, EPs) — call
-arch.get_plugin_details with the id from this list.
-
-Returns: { plugins: PluginInfo[], total: int }. A typical IDEA install has 50-150
-bundled plugins — set includeBundled=false to focus on third-party.
-
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `includeBundled` | `Boolean` | Include plugins bundled with the IDE. Default true. Set false to focus on third-party plugins. |
-| `includeDisabled` | `Boolean` | Include plugins the user has disabled. Default false (enabled only). |
-| `nameOrIdContains` | `String?` | Case-insensitive substring filter on plugin name OR plugin id. |
-
-**Returns:** `ListPluginsResponse`
-
----
-
-## `exec.execute_kotlin_in_ide`
-
-*ExecToolset*
-
-Compiles and executes arbitrary Kotlin code inside the running IDE JVM. The escape
-hatch for whatever the pre-built ui.* / arch.* / screenshot.* tools cannot do.
-
-Use this when: no pre-built tool covers your need AND the task can be expressed in
-a few lines of Kotlin against the IntelliJ Platform API (list breakpoints, toggle
-a setting, inspect a PSI element, walk virtual files, etc.).
+Use this when: code.find_class returned state=DECOMPILED or state=STUBS_ONLY and you
+want the real sources. The action is asynchronous — once triggered, the IDE downloads
+in the background and the next code.get_source call will return ATTACHED_SOURCE.
 
 Do NOT use this when:
-  - A pre-built tool can answer (ui.*, arch.*, screenshot.*) — use it; it's 100×
-    faster than spinning up a Kotlin compiler.
-  - You want to run a shell command (Runtime.exec/ProcessBuilder are blocked by the
-    safety checker — use the bundled terminal MCP tool instead).
-  - The user hasn't enabled this tool: it's off by default and requires per-call
-    confirmation, so it's a heavyweight option.
+  - The class is already a module source (SOURCE) or has attached sources
+    (ATTACHED_SOURCE) — there is nothing to download.
+  - The project isn't Maven/Gradle (the action set is empty for plain libraries).
 
-IMPLICIT BINDINGS in your code (already in scope — no import needed for these names):
-  - project: Project?           — current focused project, may be null
-  - pluginDisposable: Disposable — register listeners / subscriptions here; auto-
-                                   disposed when this call returns
-  - read { ... }    — wraps ReadAction.compute<T>; use around any PSI / index read
-  - write { ... }   — wraps WriteCommandAction.runWriteCommandAction; undo-aware
-  - onEdt { ... }   — wraps ApplicationManager.invokeAndWait; use around Swing access
+Returns: { outcome, fqn, triggeredAction?, candidatesTried, libraryUrl?, message }
+where outcome is "triggered" / "no_action_available" / "not_compiled".
 
-RETURN VALUE: the last expression of your code is serialised to JSON. Primitives,
-strings, booleans, Maps, and Iterables of these serialise cleanly. IntelliJ API
-objects (VirtualFile, PsiElement, Project, ...) are not serialisable — they fall
-back to .toString() with a warning. Prefer returning primitives, Strings, or
-Map<String, Any?> assembled from the fields you actually need.
-
-SAFETY:
-  - Off by default. Enable in Settings → Tools → IDE Introspect MCP → "Allow Kotlin
-    code execution".
-  - Each call shows a modal confirmation dialog by default (user can opt out for
-    the rest of the session — never across restarts).
-  - Textual safety blacklist rejects, before compilation: Runtime.getRuntime().exec,
-    ProcessBuilder, setAccessible(true), System.exit, Class.forName("sun.*").
-  - Every call recorded to idea.log (category "ide-introspect-mcp-audit").
-  - Hard execution timeout — capped at 10 seconds. Short interactive inspections
-    only, not long-running operations.
-
-Returns: { ok:bool, result:JsonElement, stdout:string?, stderr:string?,
-error:string?, durationMs:long, warnings:string[] }. On compile/runtime failure
-ok=false and 'error' carries the formatted stacktrace; the IDE itself stays up.
-
-EXAMPLES:
-  // List every tool window id in the current project:
-  com.intellij.openapi.wm.ToolWindowManager.getInstance(project!!).toolWindowIds.toList()
-
-  // Path of the file in the active editor:
-  read {
-    com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project!!)
-      .selectedTextEditor?.virtualFile?.path
-  }
-
-  // Number of open editors per file type:
-  read {
-    com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project!!)
-      .openFiles.groupBy { it.fileType.name }.mapValues { it.value.size }
-  }
+Caveats:
+  - The action is fire-and-forget; download progress isn't reported here. Re-poll with
+    code.find_class after a few seconds.
+  - For Gradle projects the IDE may need a project reload (Maven.DownloadSources alone
+    won't help). If "triggered" doesn't take effect, consider exec.execute_kotlin_in_ide
+    to flip GradleSettings.isDownloadSources=true and reload.
 
 **Parameters**
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `code` | `String` | Kotlin source. The LAST expression of the wrapped block is the return value (Kotlin 'last expression is the value' semantics). |
-| `timeoutMs` | `Long` | Hard execution timeout in ms. Hard cap is 10000 (anything larger is clamped). Default 10000. |
-| `captureStdout` | `Boolean` | Capture stdout written during execution into the 'stdout' response field. Default true. |
-| `captureStderr` | `Boolean` | Capture stderr written during execution into the 'stderr' response field. Default true. |
-| `runOn` | `String` | 'edt' (default — wrap on EDT, required for Swing access) or 'background' (don't bounce; for PSI reads etc. wrap with read{} yourself). |
+| `fqn` | `String` | Fully-qualified class name whose library should get sources downloaded. |
 
-**Returns:** `ExecuteKotlinResponse`
+**Returns:** `AttachSourcesResponse`
 
 ---
 
-## `screenshot.capture`
+## `code.find_class`
 
-*ScreenshotToolset*
+*CodeSourceToolset*
 
-Captures a PNG screenshot of part or all of the IDE and returns it as a base64-encoded
-string inside the response payload. The image is auto-downscaled (halving passes) until
-the PNG fits the MCP response budget (~1.5 MB); a warning is emitted when this happens.
+Resolves a fully-qualified class name within a project and reports what level of source
+is available — without returning the (potentially huge) text. Cheap probe before
+code.get_source / code.list_members.
 
-target options:
-  - "component"    — render one specific component via its off-screen paint(). Requires
-                     componentId from a prior ui.find_by_* / ui.get_tree call. Does NOT
-                     include popups / tooltips / floating overlays.
-  - "active_frame" — render the currently focused IDE frame (same caveat re overlays).
-  - "all_frames"   — render every open project frame, tiled horizontally.
-  - "screen"       — use java.awt.Robot to capture the full virtual desktop. This is the
-                     only target that includes popups, tooltips and other floating UI.
+Use this when: an agent asks "does this project see class X?", "is the source for
+com.acme.Foo available?", "where does Bar live?". Returns enough metadata
+(kind, modifiers, super/interfaces, member counts) to plan the next call.
 
-Use this when: the user asks for a screenshot, or you need to visually verify a
-UI state you suspect from a ui.* call.
+Do NOT use this when: you already need the text (call code.get_source directly), or
+you want to enumerate members (code.list_members is the right entry point).
 
-Do NOT use this when: a textual UI dump (ui.get_tree / ui.get_properties) would
-answer the question — text is cheaper and easier to reason about.
-
-Returns: { mimeType:"image/png", width:int, height:int, base64:string, warnings:string[] }.
+Returns: { state, found, metadata?, location?, hint? } where state is one of
+  - "SOURCE"           — real .java/.kt in a module source root
+  - "ATTACHED_SOURCE"  — library .class but a sources jar is attached; code.get_source
+                          will return the real source
+  - "DECOMPILED"       — library .class without sources, but Fernflower can fill in
+                          method bodies; code.get_source returns decompiler output
+  - "STUBS_ONLY"       — library .class without sources and without a decompiler — only
+                          declarations are available; consider code.attach_sources
+  - "NOT_FOUND"        — FQN doesn't resolve in this project's scope
 
 Examples:
-  target="active_frame"                                 — the current IDE window
-  target="component", componentId="c_a3f2e1b8"          — one button or panel
-  target="screen", scale=0.5                            — full desktop, halved for size
+  fqn="java.util.HashMap"            — typically DECOMPILED (JDK stubs) or
+                                       ATTACHED_SOURCE (JBR sources)
+  fqn="com.acme.MyService"           — SOURCE for project code
+  fqn="org.example.lib.Internal"     — DECOMPILED for third-party jars
 
 **Parameters**
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `target` | `String` | 'component' \| 'active_frame' \| 'all_frames' \| 'screen'. See tool description for differences (only 'screen' includes popups). |
-| `componentId` | `String?` | Required when target='component'. Stable id from a prior ui.find_by_* or ui.get_tree call. |
-| `format` | `String` | Image format. Only 'png' supported in v1. |
-| `scale` | `Double` | Post-render scale factor applied before encoding. Use 0.5 or 0.25 to halve/quarter for token budget. |
+| `fqn` | `String` | Fully-qualified class name. Inner classes use '$' or '.' separator (e.g. 'java.util.Map$Entry' or 'java.util.Map.Entry'). |
 
-**Returns:** `ImagePayload`
+**Returns:** `FindClassResponse`
 
 ---
 
-## `screenshot.crop`
+## `code.get_source`
 
-*ScreenshotToolset*
+*CodeSourceToolset*
 
-Returns a rectangular crop of either the active IDE frame or the virtual desktop.
-Cheaper than screenshot.capture+downscale when you only need a small region (e.g.
-"the toolbar at the top" or "this dialog's OK button area").
+Returns the source text of a class. Picks the best available representation for the
+agent in this order: real source > attached library source > decompiled bytecode >
+stubs. The `state` field tells you which one you got.
 
-Use this when: you want a focused crop of a known region (after locating the
-interesting bounds via ui.find_by_* / ui.get_tree).
+Use this when: you need to read the code of a class — to explain behaviour, find a
+method body, audit usage. Whatever IntelliJ shows in the editor for that class, this
+tool returns the same text.
 
-Do NOT use this when: you need the whole IDE (use screenshot.capture
-target='active_frame'), or you need overlays/popups not painted by the active
-frame (use screenshot.capture target='screen').
+Do NOT use this when:
+  - You only need to know IF the class exists (cheaper: code.find_class).
+  - You only need a list of methods/fields (cheaper: code.list_members; for large
+    classes the full text can be 100KB+).
 
-coordinateSpace:
-  - "frame"  (default) — (x,y) measured from active IDE frame's top-left corner.
-                         Crop is clipped to the frame; out-of-bounds → error.
-  - "screen"           — (x,y) on the virtual desktop (multi-monitor safe).
-
-Returns: same shape as screenshot.capture — { mimeType:"image/png", width, height,
-base64, warnings:string[] }.
-
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `x` | `Int` | Left edge of crop in pixels (relative to frame or screen per coordinateSpace). |
-| `y` | `Int` | Top edge of crop in pixels. |
-| `width` | `Int` | Crop width in pixels. The intersection with the frame/screen bounds is used. |
-| `height` | `Int` | Crop height in pixels. |
-| `coordinateSpace` | `String` | 'frame' (default, relative to active IDE frame) or 'screen' (virtual desktop). |
-| `format` | `String` | Image format. Only 'png' supported in v1. |
-| `scale` | `Double` | Post-render scale factor applied before encoding. |
-
-**Returns:** `ImagePayload`
-
----
-
-## `ui.find_by_coordinates`
-
-*UiInspectorToolset*
-
-Returns the deepest visible component at point (x, y) — equivalent to clicking that
-pixel and seeing which Swing component would receive the event. With
-returnAncestors=true, also walks up the parent chain so you can see container context.
-
-Use this when: you have screen coordinates (e.g. from a screenshot, a click log, or
-the user pointing at a spot) and need the component there.
-
-Do NOT use this when: you know the component's name or text — ui.find_by_name is
-faster. The coordinate space matters: 'screen' (default) uses virtual-desktop
-pixels (multi-monitor friendly); 'frame' uses the active frame's local coords.
-
-Returns: { matches: ComponentInfo[], total: int } where matches[0] is the deepest
-component and (if requested) matches[1..N] are its ancestors up to the window root.
-
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `x` | `Int` | X coordinate in pixels (virtual desktop if coordinateSpace=screen). |
-| `y` | `Int` | Y coordinate in pixels. |
-| `coordinateSpace` | `String` | 'screen' (default, virtual desktop) or 'frame' (active IDE frame, top-left origin). |
-| `returnAncestors` | `Boolean` | Include the parent chain from the deepest component up to the root window. |
-
-**Returns:** `FindComponentsResponse`
-
----
-
-## `ui.find_by_name`
-
-*UiInspectorToolset*
-
-Locates Swing components by their text-bearing attributes: `name` (programmatic),
-`text` (button/label caption), `accessibleName` (a11y label), `toolTipText`. Walks the
-entire UI tree once and returns the first `limit` matches. matchMode controls the
-comparison: "exact", "contains" (default, case-insensitive substring), or "regex".
-
-Use this when: you know what the component says or what its programmatic name is
-("Run", "ProjectViewTree", "buildButton") and want its id so you can inspect or
-screenshot it.
-
-Do NOT use this when: you need XML-path-style queries with class+attribute predicates
-(use ui.find_by_xpath), or you only know screen coordinates (use
-ui.find_by_coordinates), or you need the structural surroundings (use ui.get_tree).
-
-Returns: { matches: ComponentInfo[], total: int }. Matches include id you can reuse
-with ui.get_properties / screenshot.capture(target='component').
-
-Example: query="Run", matchMode="exact", searchIn=["text"] → finds the Run toolbar button.
-
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `query` | `String` | Search string. Treated as substring (contains), exact text, or regex per matchMode. |
-| `matchMode` | `String` | 'exact' \| 'contains' (default) \| 'regex'. |
-| `caseSensitive` | `Boolean` | Case sensitivity for 'exact'/'contains'. Ignored for 'regex' (use (?i) for case-insensitive regex). |
-| `searchIn` | `List<String>` | Which fields to test. Default ['name','text','accessibleName','toolTipText']. Narrow it to speed things up. |
-| `limit` | `Int` | Cap on returned matches. Default 50. |
-
-**Returns:** `FindComponentsResponse`
-
----
-
-## `ui.find_by_xpath`
-
-*UiInspectorToolset*
-
-Finds components by an XPath subset compatible with intellij-ui-test-robot — handy
-when ui.find_by_name's free-text match is too loose and you need to filter by class
-AND attribute together.
-
-Use this when: you need precise structural queries like "the ActionButton whose text
-is 'Run'" or "the third row in this tree" — i.e. class + attribute + position
-constraints in a single expression.
-
-Do NOT use this when: a plain substring search is enough (ui.find_by_name is cheaper
-and easier), or you have coordinates (ui.find_by_coordinates).
-
-Supported syntax:
-  - axes: '/' (child), '//' (descendant-or-self), '.' (self)
-  - element names: simple class name (e.g. 'ActionButton'), 'div' or '*' (any)
-  - attribute predicates: [@class=..], [@name=..], [@accessibleName=..], [@text=..],
-    [@toolTipText=..]; combine with 'and'
-  - positional predicate: [N], 1-based
+Returns: { state, fqn, location, text, byteLength, truncated, decompilerClass? }.
+  - `text` is truncated to maxBytes UTF-8 bytes — `truncated=true` means there's more.
+  - `decompilerClass` is set when state=DECOMPILED (typically
+    "org.jetbrains.java.decompiler.IdeaDecompiler").
 
 Examples:
-  //div[@class='ActionButton' and @text='Run']
-  //JPanel[@accessibleName='Project view']//JTree
-  //JButton[2]
-
-Returns: { matches: ComponentInfo[], total: int }.
+  fqn="java.util.HashMap"            — full Fernflower-decompiled source or attached JDK source
+  fqn="com.acme.MyService"           — module source verbatim
 
 **Parameters**
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `xpath` | `String` | XPath expression in the syntax above. Wrap attribute values in single quotes. |
-| `limit` | `Int` | Cap on returned matches. Default 50. |
+| `fqn` | `String` | Fully-qualified class name. |
+| `maxBytes` | `Int` | Maximum UTF-8 byte count of the returned text. Default 64 KiB. Reduce for large library classes. |
 
-**Returns:** `FindComponentsResponse`
+**Returns:** `GetSourceResponse`
 
 ---
 
-## `ui.get_properties`
+## `code.list_members`
 
-*UiInspectorToolset*
+*CodeSourceToolset*
 
-Returns the complete property bag for one previously-located component, identified
-by its id. Includes basic Swing fields (class, name, bounds, visibility), accessible
-context (a11y name/role/description), JComponent client properties (UI hints set via
-putClientProperty), and the IntelliJ UI-Inspector PropertyBeans when the internal
-API is reachable.
+Lists methods, constructors, fields, and inner classes of a class as a structured array
+— without returning the full source text. For large library classes this is an order
+of magnitude cheaper than code.get_source.
 
-Use this when: you've already located a component via ui.find_by_name /
-ui.find_by_coordinates / ui.find_by_xpath / ui.get_tree and now want everything
-the platform knows about it.
+Use this when: you want to know a class's API surface — "what methods does HashMap
+expose?", "what fields does ProjectFileIndex declare?". Works on both source and
+compiled (decompiled / stubs) classes.
 
-Do NOT use this with a fresh id-less guess — the id must come from a prior ui.*
-response in the same IDE session (ids do not survive an IDE restart). If the
-component has since been garbage-collected (panel closed), you'll get an
-"is no longer attached" error.
+Do NOT use this when: you need actual implementation bodies — call code.get_source for
+that. For stubs-only classes the signatures here are accurate but method bodies don't
+exist anywhere.
 
-Returns: { componentId, className, properties: [{name,value}...], warnings: string[] }.
-Properties are key-value pairs like "bounds": "10,20 100x30", "accessibleName": "Run",
-"clientProperty[place]": "MainToolbar", "uiInspector[ActionId]": "RunAction", etc.
+Returns: { fqn, state, members, total } where each member has kind ("method" |
+"constructor" | "field" | "innerClass"), name, signature (one-line declaration as
+IntelliJ shows in Structure view), modifiers, and for methods returnType + parameters.
 
-**Parameters**
-
-| Name | Type | Description |
-| --- | --- | --- |
-| `componentId` | `String` | Component id (e.g. 'c_a3f2e1b8') obtained from a prior ui.find_by_* or ui.get_tree call in the same IDE session. |
-| `includeClientProperties` | `Boolean` | Include JComponent client properties (UI hints stored via putClientProperty). |
-| `includeAccessibleContext` | `Boolean` | Include accessibleContext (a11y name/role/description). Cheap; leave on unless responses get noisy. |
-
-**Returns:** `PropertiesResponse`
-
----
-
-## `ui.get_tree`
-
-*UiInspectorToolset*
-
-Returns the IDE's live Swing component tree (BFS, capped by maxDepth). Each node
-carries a stable id ("c_xxxxxxxx") you can pass to ui.get_properties or
-screenshot.capture to drill into a specific component.
-
-Use this when: you need to see the current UI structure of the IDE — what windows,
-panels, toolbars and actions are on screen right now. Typical first step before any
-targeted ui.* call when you don't yet know the component id.
-
-Do NOT use this when: you already know the component id (call ui.get_properties),
-you only need to locate one component by visible text (use ui.find_by_name —
-much cheaper), or you have screen coordinates (use ui.find_by_coordinates).
-
-Defaults are tuned for cheapness: depth 12, includeProperties=false. Property
-collection per node hits reflection on thousands of components and can saturate
-the EDT — fetch them point-by-point via ui.get_properties instead. Hard-capped at
-5000 nodes; if truncated the response has truncated=true and a warning.
-
-Scope with rootSelector: "frame" (top-level frames only), "dialog" (only modal
-dialogs), "tool_window:<id>" (a specific tool window's content, e.g.
-"tool_window:Project"), or null for everything visible. Narrow the scope whenever
-you can — it's the single biggest perf knob.
-
-Returns: { nodes: ComponentInfo[], rootIds: string[], truncated: boolean, warnings: string[] }.
-Each ComponentInfo has id, class (FQCN), name, accessibleName, accessibleRole,
-bounds {x,y,width,height}, visible, enabled, text, toolTipText, properties[], children[].
+Examples:
+  fqn="java.util.HashMap", kinds=["method"]           — every method, with signatures
+  fqn="com.intellij.openapi.project.Project"          — every member of Project interface
 
 **Parameters**
 
 | Name | Type | Description |
 | --- | --- | --- |
-| `maxDepth` | `Int` | Max BFS depth. Default 12. Keep ≤15 for the full frame; full IDE trees easily exceed 5000 nodes. |
-| `rootSelector` | `String?` | Scope filter: 'frame', 'dialog', 'tool_window:<id>' (e.g. 'tool_window:Project'), or null for everything visible. |
-| `includeInvisible` | `Boolean` | Include invisible components (those with isVisible()==false). Off by default. |
-| `includeProperties` | `Boolean` | Attach UI-Inspector-style property bag to every node. Expensive — prefer ui.get_properties for a single id. |
-| `truncatePropertyValueAt` | `Int` | Maximum character length for any single property value before truncation. |
+| `fqn` | `String` | Fully-qualified class name. |
+| `kinds` | `List<String>` | Restrict to these kinds. Default all. Allowed: 'method', 'constructor', 'field', 'innerClass'. |
+| `includeInherited` | `Boolean` | Include inherited members. Default false (declared only). |
+| `limit` | `Int` | Cap on returned members. Default 500. |
 
-**Returns:** `UiTreeResponse`
+**Returns:** `ListMembersResponse`
 
 ---
 
