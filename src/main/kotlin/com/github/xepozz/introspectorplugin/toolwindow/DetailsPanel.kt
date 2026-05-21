@@ -82,12 +82,19 @@ class DetailsPanel : JPanel(BorderLayout()) {
                 val attrs = e.additionalAttributes.entries.joinToString("") {
                     "<tr><td><b>${esc(it.key)}</b></td><td>${esc(it.value)}</td></tr>"
                 }
+                val title = e.effectiveClass ?: e.implementationClass ?: "(no impl class)"
+                val beanRow = if (e.effectiveClass != null && e.implementationClass != null &&
+                    e.effectiveClass != e.implementationClass
+                ) {
+                    "<tr><td><b>bean class</b></td><td>${esc(e.implementationClass)}</td></tr>"
+                } else ""
                 showHtml(
                     """
-                    <h3>${esc(e.implementationClass ?: "(no impl class)")}</h3>
+                    <h3>${esc(title)}</h3>
                     <table>
                       <tr><td><b>EP</b></td><td>${esc(e.extensionPointName)}</td></tr>
                       <tr><td><b>provided by</b></td><td>${esc(e.providedByPluginId)}</td></tr>
+                      $beanRow
                       $attrs
                     </table>
                     """.trimIndent()

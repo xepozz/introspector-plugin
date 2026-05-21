@@ -198,9 +198,11 @@ object ExtensionPointInspector {
                 val pluginId = pd?.let { extractPluginIdString(it) } ?: "unknown"
                 val pluginName = pd?.let { readMethod(it, "getName")?.toString() }
                 val attributes = readAdditionalAttributes(adapter)
+                val effectiveClass = pickEffectiveClass(implClass, attributes)
                 out += ExtensionInfo(
                     extensionPointName = pointName,
                     implementationClass = implClass,
+                    effectiveClass = effectiveClass,
                     providedByPluginId = pluginId,
                     providedByPluginName = pluginName,
                     additionalAttributes = attributes,
@@ -248,30 +250,75 @@ object ExtensionPointInspector {
 
     @Suppress("UNCHECKED_CAST")
     private fun readAdditionalAttributes(adapter: Any): Map<String, String> {
-        // XmlExtensionAdapter holds a private `extensionElement: XmlElement`. XmlElement
-        // exposes `attributes` as a Map<String, String> (Kotlin val backed by a JvmField).
+        // Two complementary sources for the XML attributes attached to an extension:
+        //   1. `extensionElement: XmlElement` — present until IntelliJ nulls it after instance creation
+        //      (which is most of the time for services / tool windows by the time we look).
+        //   2. `extensionInstance` — when present, public/JvmField properties of the bean are a
+        //      lossless mirror of the original XML attributes.
+        // We merge both so newly-loaded EPs and long-lived ones look the same.
+        val merged = mutableMapOf<String, String>()
         try {
-            val element = readField(adapter, "extensionElement") ?: return emptyMap()
-            // Try Map-shaped attributes first (modern XmlElement)…
-            val asMap = readField(element, "attributes") as? Map<*, *>
-                ?: readMethod(element, "getAttributes") as? Map<*, *>
-            if (asMap != null) {
-                return asMap.entries
-                    .mapNotNull { (k, v) -> if (k != null && v != null) k.toString() to v.toString() else null }
-                    .toMap()
+            val element = readField(adapter, "extensionElement")
+            if (element != null) {
+                val asMap = readField(element, "attributes") as? Map<*, *>
+                    ?: readMethod(element, "getAttributes") as? Map<*, *>
+                if (asMap != null) {
+                    for ((k, v) in asMap) {
+                        if (k != null && v != null) merged[k.toString()] = v.toString()
+                    }
+                } else {
+                    val asList = readMethod(element, "getAttributes") as? List<*>
+                    asList?.forEach { a ->
+                        if (a == null) return@forEach
+                        val n = readMethod(a, "getName")?.toString() ?: return@forEach
+                        val v = readMethod(a, "getValue")?.toString() ?: return@forEach
+                        merged[n] = v
+                    }
+                }
             }
-            // …falling back to legacy jdom List<Attribute> form.
-            val asList = readMethod(element, "getAttributes") as? List<*> ?: return emptyMap()
-            val out = mutableMapOf<String, String>()
-            for (a in asList) {
-                if (a == null) continue
-                val n = readMethod(a, "getName")?.toString() ?: continue
-                val v = readMethod(a, "getValue")?.toString() ?: continue
-                out[n] = v
+        } catch (_: Throwable) {}
+        try {
+            val instance = readField(adapter, "extensionInstance")
+            if (instance != null) {
+                harvestBeanFields(instance, merged)
             }
-            return out
-        } catch (_: Throwable) {
-            return emptyMap()
+        } catch (_: Throwable) {}
+        return merged
+    }
+
+    /** For BEAN_CLASS extensions whose XmlElement was already discarded, pull XML-attribute-shaped
+     *  data straight off the bean's public/JvmField properties. */
+    private fun harvestBeanFields(instance: Any, into: MutableMap<String, String>) {
+        var c: Class<*>? = instance.javaClass
+        while (c != null && c != Any::class.java) {
+            for (f in c.declaredFields) {
+                if (java.lang.reflect.Modifier.isStatic(f.modifiers)) continue
+                if (f.isSynthetic) continue
+                if (into.containsKey(f.name)) continue
+                try {
+                    f.isAccessible = true
+                    val v = f.get(instance) ?: continue
+                    // Only flatten primitive-ish values; nested beans would clutter the view.
+                    when (v) {
+                        is String, is Number, is Boolean, is Char -> into[f.name] = v.toString()
+                    }
+                } catch (_: Throwable) {}
+            }
+            c = c.superclass
         }
+    }
+
+    /** Resolve the "user class" for an extension. For INTERFACE EPs, [implClass] is already the
+     *  user's class. For BEAN_CLASS EPs, the user's class lives in one of these XML attributes. */
+    private fun pickEffectiveClass(implClass: String?, attributes: Map<String, String>): String? {
+        val candidates = listOf(
+            "implementation", "factoryClass", "instance",
+            "serviceImplementation", "serviceInterface", "class",
+        )
+        for (key in candidates) {
+            val v = attributes[key]
+            if (!v.isNullOrBlank()) return v
+        }
+        return implClass
     }
 }

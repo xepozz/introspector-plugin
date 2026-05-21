@@ -53,9 +53,19 @@ class PlatformExplorerCellRenderer : ColoredTreeCellRenderer() {
             }
             is PlatformExplorerNode.ExtensionNode -> {
                 icon = AllIcons.Nodes.Class
-                append(node.extension.implementationClass ?: "(no impl class)")
+                val e = node.extension
+                val effective = e.effectiveClass ?: e.implementationClass ?: "(no impl class)"
+                append(effective)
+                // If the effective class differs from the bean wrapper, surface the wrapper
+                // dimly so the reader can tell which EP shape this extension uses.
+                if (e.effectiveClass != null && e.implementationClass != null &&
+                    e.effectiveClass != e.implementationClass
+                ) {
+                    append("  ")
+                    append("via ${e.implementationClass.substringAfterLast('.')}", SimpleTextAttributes.GRAY_ATTRIBUTES)
+                }
                 append("  ")
-                append("← ${node.extension.providedByPluginId}", SimpleTextAttributes.GRAY_ATTRIBUTES)
+                append("← ${e.providedByPluginId}", SimpleTextAttributes.GRAY_ATTRIBUTES)
             }
             is PlatformExplorerNode.DependencyNode -> {
                 icon = AllIcons.Nodes.PpLib
