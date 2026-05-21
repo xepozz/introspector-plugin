@@ -150,6 +150,11 @@ class DetailViews(
             }
         }
 
+        // Members preview — uses JavaPsiFacade reflectively, skips silently on non-Java IDEs.
+        // The component owns its "Members" section header so we just append it raw.
+        val implFqn = e.effectiveClass ?: e.implementationClass
+        implFqn?.let { MembersSection.build(project, it) }?.let { form.custom(it) }
+
         val simple = title.substringAfterLast('.').substringAfterLast('$')
         val crumbs = Breadcrumb.render(
             pluginSegment(e.providedByPluginId, e.providedByPluginName),
