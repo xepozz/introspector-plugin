@@ -1,6 +1,7 @@
 package com.github.xepozz.introspectorplugin.tools
 
 import com.github.xepozz.introspectorplugin.core.ClassSourceResolver
+import com.github.xepozz.introspectorplugin.core.PsiModifiers
 import com.github.xepozz.introspectorplugin.model.AttachSourcesResponse
 import com.github.xepozz.introspectorplugin.model.ClassSourceState
 import com.github.xepozz.introspectorplugin.model.FindClassResponse
@@ -10,6 +11,7 @@ import com.github.xepozz.introspectorplugin.model.MemberInfo
 import com.github.xepozz.introspectorplugin.model.ParameterInfo
 import com.github.xepozz.introspectorplugin.util.onEdtBlocking
 import com.github.xepozz.introspectorplugin.util.readActionBlocking
+import com.github.xepozz.introspectorplugin.util.truncateUtf8
 import com.intellij.mcpserver.McpExpectedError
 import com.intellij.mcpserver.McpToolset
 import com.intellij.mcpserver.annotations.McpDescription
@@ -143,14 +145,14 @@ class CodeSourceToolset : McpToolset {
             // PsiFile.getText() handles all four states transparently — for .class files
             // ClsFileImpl routes through the registered Light decompiler.
             val full = res.textFile.text ?: ""
-            val (truncatedText, byteLen, truncated) = truncateUtf8(full, maxBytes)
+            val cut = truncateUtf8(full, maxBytes)
             GetSourceResponse(
                 state = res.state.name,
                 fqn = res.psiClass?.qualifiedName ?: fqn,
                 location = ClassSourceResolver.locationOf(project, res),
-                text = truncatedText,
-                byteLength = byteLen,
-                truncated = truncated,
+                text = cut.text,
+                byteLength = cut.byteLength,
+                truncated = cut.truncated,
                 decompilerClass = res.decompilerClass,
             )
         }
@@ -198,56 +200,55 @@ class CodeSourceToolset : McpToolset {
                 throw McpExpectedError("Class not found: $fqn", JsonObject(emptyMap()))
             }
             val cls = res.psiClass
-            val all = mutableListOf<MemberInfo>()
-            if ("constructor" in allowed || "method" in allowed) {
-                val methods = if (includeInherited) cls.allMethods else cls.methods
-                methods.mapTo(all) { method ->
-                    val isCtor = method.isConstructor
-                    val kind = if (isCtor) "constructor" else "method"
-                    if (kind !in allowed) return@mapTo MemberInfo("skipped", "", "")
-                    MemberInfo(
-                        kind = kind,
-                        name = method.name,
-                        signature = methodSignature(method),
-                        modifiers = methodModifiers(method),
-                        returnType = if (isCtor) null else method.returnType?.canonicalText,
-                        parameters = method.parameterList.parameters.map {
-                            ParameterInfo(it.name, it.type.canonicalText)
-                        },
-                    )
+            val all = buildList {
+                if ("method" in allowed || "constructor" in allowed) {
+                    val methods = if (includeInherited) cls.allMethods else cls.methods
+                    for (m in methods) {
+                        val kind = if (m.isConstructor) "constructor" else "method"
+                        if (kind !in allowed) continue
+                        add(memberOf(m, kind))
+                    }
+                }
+                if ("field" in allowed) {
+                    val fields = if (includeInherited) cls.allFields else cls.fields
+                    fields.mapTo(this, ::memberOf)
+                }
+                if ("innerClass" in allowed) {
+                    val inners = if (includeInherited) cls.allInnerClasses else cls.innerClasses
+                    inners.mapTo(this, ::memberOfInner)
                 }
             }
-            if ("field" in allowed) {
-                val fields = if (includeInherited) cls.allFields else cls.fields
-                fields.mapTo(all) { field ->
-                    MemberInfo(
-                        kind = "field",
-                        name = field.name,
-                        signature = "${field.type.canonicalText} ${field.name}",
-                        modifiers = fieldModifiers(field.modifierList),
-                    )
-                }
-            }
-            if ("innerClass" in allowed) {
-                val inners = if (includeInherited) cls.allInnerClasses else cls.innerClasses
-                inners.mapTo(all) { inner ->
-                    MemberInfo(
-                        kind = "innerClass",
-                        name = inner.name ?: "<anonymous>",
-                        signature = inner.qualifiedName ?: inner.name ?: "<anonymous>",
-                        modifiers = fieldModifiers(inner.modifierList),
-                    )
-                }
-            }
-            val filtered = all.filter { it.kind != "skipped" }
             ListMembersResponse(
                 fqn = cls.qualifiedName ?: fqn,
                 state = res.state.name,
-                members = filtered.take(limit),
-                total = filtered.size,
+                members = all.take(limit),
+                total = all.size,
             )
         }
     }
+
+    private fun memberOf(m: PsiMethod, kind: String): MemberInfo = MemberInfo(
+        kind = kind,
+        name = m.name,
+        signature = methodSignature(m),
+        modifiers = PsiModifiers.read(m.modifierList, PsiModifiers.METHOD),
+        returnType = if (m.isConstructor) null else m.returnType?.canonicalText,
+        parameters = m.parameterList.parameters.map { ParameterInfo(it.name, it.type.canonicalText) },
+    )
+
+    private fun memberOf(f: com.intellij.psi.PsiField): MemberInfo = MemberInfo(
+        kind = "field",
+        name = f.name,
+        signature = "${f.type.canonicalText} ${f.name}",
+        modifiers = PsiModifiers.read(f.modifierList, PsiModifiers.FIELD),
+    )
+
+    private fun memberOfInner(c: com.intellij.psi.PsiClass): MemberInfo = MemberInfo(
+        kind = "innerClass",
+        name = c.name ?: "<anonymous>",
+        signature = c.qualifiedName ?: c.name ?: "<anonymous>",
+        modifiers = PsiModifiers.read(c.modifierList, PsiModifiers.CLASS),
+    )
 
     @McpTool(name = "code.attach_sources")
     @McpDescription(
@@ -320,23 +321,21 @@ class CodeSourceToolset : McpToolset {
 
         val mgr = ActionManager.getInstance()
         val tried = mutableListOf<String>()
-        var triggered: String? = null
 
         // Invoking an action must happen on the EDT; the action's own update/actionPerformed
         // may pop a dialog or kick off a background task.
-        onEdtBlocking {
-            for (id in candidates) {
-                val action = mgr.getAction(id) ?: continue
+        val triggered: String? = onEdtBlocking {
+            candidates.firstNotNullOfOrNull { id ->
+                val action = mgr.getAction(id) ?: return@firstNotNullOfOrNull null
                 tried.add(id)
-                val presentation = action.templatePresentation.clone()
                 val event = AnActionEvent.createEvent(
-                    action, dataContext, presentation, ActionPlaces.UNKNOWN, ActionUiKind.NONE, null
+                    action, dataContext, action.templatePresentation.clone(),
+                    ActionPlaces.UNKNOWN, ActionUiKind.NONE, null,
                 )
                 action.update(event)
-                if (!event.presentation.isEnabled) continue
+                if (!event.presentation.isEnabled) return@firstNotNullOfOrNull null
                 ActionUtil.performAction(action, event)
-                triggered = id
-                break
+                id
             }
         }
 
@@ -380,29 +379,4 @@ class CodeSourceToolset : McpToolset {
         return "$ret${m.name}($params)"
     }
 
-    private fun methodModifiers(m: PsiMethod): List<String> {
-        val ml = m.modifierList
-        return listOf(
-            "public", "protected", "private", "static", "abstract",
-            "final", "synchronized", "native", "default",
-        ).filter { ml.hasModifierProperty(it) }
-    }
-
-    private fun fieldModifiers(ml: com.intellij.psi.PsiModifierList?): List<String> {
-        if (ml == null) return emptyList()
-        return listOf(
-            "public", "protected", "private", "static", "final", "volatile", "transient",
-        ).filter { ml.hasModifierProperty(it) }
-    }
-
-    /** Truncates [s] to at most [maxBytes] UTF-8 bytes, preserving full code points. */
-    private fun truncateUtf8(s: String, maxBytes: Int): Triple<String, Int, Boolean> {
-        val bytes = s.toByteArray(Charsets.UTF_8)
-        if (bytes.size <= maxBytes) return Triple(s, bytes.size, false)
-        // Find the last char boundary at or before maxBytes; UTF-8 continuation bytes start with 10xxxxxx.
-        var cut = maxBytes
-        while (cut > 0 && (bytes[cut].toInt() and 0xC0) == 0x80) cut--
-        val truncated = String(bytes, 0, cut, Charsets.UTF_8)
-        return Triple(truncated, bytes.size, true)
-    }
 }
