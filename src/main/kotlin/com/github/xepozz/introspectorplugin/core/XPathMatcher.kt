@@ -9,14 +9,21 @@ import com.github.xepozz.introspectorplugin.model.ComponentInfo
  *
  *  - `/foo`  — child step
  *  - `//foo` — descendant-or-self step
- *  - `.`     — self
+ *  - `.`     — self (works with predicates: `.[@class='X']` filters the context node)
  *  - `*`     — any element
  *  - `div`   — wildcard alias used by remote-robot ("any component")
  *  - predicates `[@attr='value']` or `[@attr=\"value\"]` with `and`-joined predicates
- *  - positional predicate `[N]` (1-based)
+ *  - positional predicate `[N]` (1-based, document order, applied AFTER attribute predicates)
  *
- * Supported attributes: `@class`, `@name`, `@accessibleName`, `@text`, `@toolTipText`.
- * Predicates currently only test equality.
+ * Supported attributes: `@class` (simple name), `@fqClass` (fully qualified),
+ * `@name`, `@accessibleName`, `@text`, `@toolTipText`. Predicates only test equality.
+ *
+ * Name matching (`/JButton`, `//JBLabel`) is case-sensitive and accepts either the simple
+ * class name or the fully qualified one. An unknown `@attr` raises [IllegalArgumentException]
+ * — silent no-match would be a debugging trap.
+ *
+ * Traversal of `//` / `*` uses **document order** (depth-first, children left-to-right).
+ * This matters when positional predicates pick a specific match (`//JButton[2]`).
  */
 class XPathMatcher(
     private val nodesById: Map<String, ComponentInfo>,
@@ -48,24 +55,28 @@ class XPathMatcher(
     }
 
     private fun collectDescendants(start: ComponentInfo, out: MutableList<ComponentInfo>) {
+        // Iterative depth-first traversal in document order (children left to right).
+        // Using removeLast + reversed push gives DFS; removeFirst + in-order push would be
+        // BFS, which breaks positional predicates that target the Nth match in document
+        // order — that's the convention `intellij-ui-test-robot` follows.
         val stack: ArrayDeque<ComponentInfo> = ArrayDeque()
         stack.addLast(start)
         while (stack.isNotEmpty()) {
-            val n = stack.removeFirst()
+            val n = stack.removeLast()
             out.add(n)
-            for (cid in n.children) {
-                val c = nodesById[cid] ?: continue
+            for (i in n.children.indices.reversed()) {
+                val c = nodesById[n.children[i]] ?: continue
                 stack.addLast(c)
             }
         }
     }
 
     private fun matchesNameAndPredicates(node: ComponentInfo, step: Step): Boolean {
-        if (step.localName != "*" && step.localName != "div") {
-            // localName matches against the simple class name.
+        if (step.tagName != "*" && step.tagName != "div") {
+            // tagName matches either the simple class name or the fully qualified one.
             val simple = node.className.substringAfterLast('.')
-            if (!simple.equals(step.localName, ignoreCase = false) &&
-                !node.className.equals(step.localName, ignoreCase = false)
+            if (!simple.equals(step.tagName, ignoreCase = false) &&
+                !node.className.equals(step.tagName, ignoreCase = false)
             ) return false
         }
         for ((attr, expected) in step.predicates) {
@@ -76,7 +87,10 @@ class XPathMatcher(
                 "accessibleName" -> node.accessibleName
                 "text" -> node.text
                 "toolTipText" -> node.toolTipText
-                else -> return false
+                else -> throw IllegalArgumentException(
+                    "Unknown XPath attribute @$attr. " +
+                            "Supported: @class, @fqClass, @name, @accessibleName, @text, @toolTipText.",
+                )
             }
             if (actual != expected) return false
         }
@@ -89,22 +103,17 @@ class XPathMatcher(
 
     private data class Step(
         val axis: Axis,
-        val localName: String,
+        val tagName: String,
         val predicates: List<Pair<String, String>>,
         val positional: Int?,
     )
 
     private fun parseSteps(input: String): List<Step> {
+        // Leading `/` or `//` decides whether the first step is CHILD or DESCENDANT_OR_SELF;
+        // a bareword (no leading slash) is treated as `//bareword` — convenient shorthand.
         val s = input.trim()
-        val steps = mutableListOf<Step>()
-        var i = 0
-        // Leading `/` or `//` defines whether to start absolute.
-        // We treat them like normal step prefixes.
-        // If the input doesn't start with `/`, we treat it as descendant-or-self.
-        if (!s.startsWith("/")) {
-            return parseSingleChain("//$s")
-        }
-        return parseSingleChain(s)
+        val normalized = if (s.startsWith("/")) s else "//$s"
+        return parseSingleChain(normalized)
     }
 
     private fun parseSingleChain(s: String): List<Step> {
@@ -118,7 +127,7 @@ class XPathMatcher(
             }
             val nameStart = i
             while (i < s.length && s[i] != '/' && s[i] != '[') i++
-            val localName = s.substring(nameStart, i).ifEmpty { "*" }
+            val tagName = s.substring(nameStart, i).ifEmpty { "*" }
 
             val predicates = mutableListOf<Pair<String, String>>()
             var positional: Int? = null
@@ -136,10 +145,13 @@ class XPathMatcher(
                 i = end + 1
             }
 
-            if (localName == "." && predicates.isEmpty()) {
-                steps += Step(Axis.SELF, "*", emptyList(), null)
+            if (tagName == ".") {
+                // `.` is the self axis. Predicates still apply (`.[@class='X']` keeps the
+                // context node only when it matches). Treat its name as wildcard so the
+                // name check in matchesNameAndPredicates doesn't reject every node.
+                steps += Step(Axis.SELF, "*", predicates, positional)
             } else {
-                steps += Step(axis, localName, predicates, positional)
+                steps += Step(axis, tagName, predicates, positional)
             }
         }
         return steps
