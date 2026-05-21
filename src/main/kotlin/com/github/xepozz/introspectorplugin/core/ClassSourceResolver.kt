@@ -109,17 +109,11 @@ object ClassSourceResolver {
             cls.isRecord -> "record"
             else -> "class"
         }
-        val modList = cls.modifierList
-        val modifiers = if (modList == null) emptyList()
-        else listOf(
-            "public", "protected", "private", "static", "abstract", "final",
-            "sealed", "non-sealed", "default",
-        ).filter { modList.hasModifierProperty(it) }
         return ClassMetadata(
             fqn = cls.qualifiedName ?: cls.name ?: "<anonymous>",
             simpleName = cls.name ?: "<anonymous>",
             kind = kind,
-            modifiers = modifiers,
+            modifiers = PsiModifiers.read(cls.modifierList, PsiModifiers.CLASS),
             superClass = cls.superClass?.qualifiedName,
             interfaces = cls.interfaces.mapNotNull { it.qualifiedName },
             typeParameters = cls.typeParameters.map { it.name ?: "?" },
