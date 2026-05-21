@@ -1,19 +1,53 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
-    <id>com.github.xepozz.introspectorplugin</id>
-    <name>introspector-plugin</name>
+    <id>com.github.xepozz.ide.introspector</id>
+    <name>IDE Introspect</name>
     <vendor>xepozz</vendor>
     <description><![CDATA[
-        <p><b>introspector-plugin</b> is a repository that provides a pure template to make it easier to create a new plugin project.</p>
-        <p>The main goal of this template is to speed up the setup phase of plugin development for both new and experienced developers by preconfiguring the project scaffold and CI, linking to the proper documentation pages, and keeping everything organized.</p>
+        <p><a href="https://github.com/j-plugins/screen-capture-plugin">Github</a> | <a href="https://t.me/jb_plugins">Telegram</a> | <a href="https://github.com/xepozz/xepozz?tab=readme-ov-file#become-a-sponsor">Donation</a></p>
+        <h2 id="screen-capture">IDE Introspector</h2>
+        <p>IDE Introspector exposes the running IntelliJ IDE to MCP clients (Claude, Cursor, Codex, ...) so an agent can:</p>
+        <ul>
+            <li>Read the Swing UI tree, find components by name/coordinates/XPath, capture screenshots</li>
+            <li>Enumerate plugins and extension points live from this very IDE instance</li>
+            <li>Execute arbitrary Kotlin in the IDE JVM (opt-in, per-call confirmation) (Beta)</li>
+        </ul>
+        <p>Ships with a Platform Explorer tool window for interactive plugin-architecture browsing without an MCP client.</p>
+        <h2 id="donation">Donation</h2>
+        <p>Open-source tools can greatly improve workflows, helping developers and businesses save time and increase revenue.
+        Many successful projects have been built on these tools, benefiting a wide community.
+        However, maintaining and enhancing these resources requires continuous effort and investment.</p>
+        <p>Support from the community helps keep these projects alive and ensures they remain useful for everyone.
+        Donations play a key role in sustaining and improving these open-source initiatives.</p>
+        <p>Chose the best option for you to say thank you:</p>
+        <p><a href="https://patreon.com/xepozz"><img height="28" src="https://github.githubassets.com/assets/patreon-96b15b9db4b9.svg"> Patreon</a>
+        |
+        <a href="https://buymeacoffee.com/xepozz"><img height="28" src="https://github.githubassets.com/assets/buy_me_a_coffee-63ed78263f6e.svg"> Buy me a coffee</a>
+        |
+        <a href="https://boosty.to/xepozz"><img height="28" src="https://boosty.to/favicon.ico"> Boosty</a></p>
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
 
-    <resource-bundle>messages.MyBundle</resource-bundle>
+    <depends optional="true" config-file="mcp-integration.xml">com.intellij.mcpServer</depends>
 
     <extensions defaultExtensionNs="com.intellij">
-        <toolWindow factoryClass="com.github.xepozz.introspectorplugin.toolWindow.MyToolWindowFactory" id="MyToolWindow"/>
-        <postStartupActivity implementation="com.github.xepozz.introspectorplugin.startup.MyProjectActivity" />
+        <toolWindow id="Platform Explorer"
+                    anchor="right"
+                    icon="AllIcons.Nodes.Plugin"
+                    factoryClass="com.github.xepozz.ide.introspector.toolwindow.PlatformExplorerToolWindowFactory"/>
+
+        <applicationService
+            serviceImplementation="com.github.xepozz.ide.introspector.core.ComponentRegistry"/>
+        <applicationService
+            serviceImplementation="com.github.xepozz.ide.introspector.core.PluginInventory"/>
+        <applicationService
+            serviceImplementation="com.github.xepozz.ide.introspector.exec.ExecSettings"/>
+
+        <applicationConfigurable
+            instance="com.github.xepozz.ide.introspector.exec.ExecSettingsConfigurable"
+            id="com.github.xepozz.ide.introspector.exec.settings"
+            displayName="IDE Introspector"
+            parentId="tools"/>
     </extensions>
 </idea-plugin>
