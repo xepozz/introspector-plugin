@@ -6,7 +6,6 @@ import com.github.xepozz.ide.introspector.model.ExtensionPointInfo
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.extensions.ExtensionPoint
 import com.intellij.openapi.extensions.ExtensionsArea
-import com.intellij.openapi.extensions.impl.ExtensionPointImpl
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.application.ApplicationManager
 
@@ -112,13 +111,11 @@ object ExtensionPointInspector {
     }
 
     internal fun kindAndClass(ep: ExtensionPoint<*>): Pair<String, String> {
-        // ExtensionPointImpl exposes `className` as a @JvmField; `getKind()` is a method. We
-        // try the typed field first (fast), then fall back to reflection across name drift
-        // (`className` / `myClassName`) and finally to the lazily-resolved Class<*> for EPs
-        // that were registered with a Class reference rather than a name string.
+        // Read `className` and `getKind()` via reflection only — `ExtensionPointImpl` is
+        // marked @ApiStatus.Internal and direct usage trips the plugin verifier. Reflection
+        // also handles platform-version drift (`className` / `myClassName`) and falls back
+        // to the lazily-resolved Class<*> for EPs registered by Class reference.
         try {
-            val impl = ep as? ExtensionPointImpl<*>
-            val typedClassName = impl?.className
             val kindRaw = ep.javaClass.methods.firstOrNull {
                 it.name == "getKind" && it.parameterCount == 0
             }?.invoke(ep)
@@ -127,8 +124,7 @@ object ExtensionPointInspector {
                 "BEAN_CLASS" -> "BEAN_CLASS"
                 else -> kindRaw?.toString() ?: "BEAN_CLASS"
             }
-            val resolvedName = typedClassName
-                ?: tryReadClassNameField(ep)
+            val resolvedName = tryReadClassNameField(ep)
                 ?: tryReadExtensionClass(ep)
                 ?: "?"
             return kindStr to resolvedName

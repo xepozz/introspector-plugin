@@ -105,7 +105,8 @@ class PluginInventory {
         const val CACHE_TTL_MS = 30_000L
         fun getInstance(): PluginInventory = service()
 
-        @Suppress("DEPRECATION")
-        private fun readIsEnabled(d: com.intellij.ide.plugins.IdeaPluginDescriptor): Boolean = d.isEnabled
+        /** [IdeaPluginDescriptor.isEnabled] is deprecated; check via [PluginManagerCore.isDisabled]. */
+        private fun readIsEnabled(d: com.intellij.ide.plugins.IdeaPluginDescriptor): Boolean =
+            !PluginManagerCore.isDisabled(d.pluginId)
     }
 }

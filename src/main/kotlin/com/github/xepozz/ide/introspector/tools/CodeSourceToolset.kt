@@ -336,7 +336,8 @@ class CodeSourceToolset : McpToolset {
                     action, dataContext, action.templatePresentation.clone(),
                     ActionPlaces.UNKNOWN, ActionUiKind.NONE, null,
                 )
-                action.update(event)
+                // AnAction.update() is @ApiStatus.OverrideOnly — call via ActionUtil.
+                ActionUtil.updateAction(action, event)
                 if (!event.presentation.isEnabled) return@firstNotNullOfOrNull null
                 ActionUtil.performAction(action, event)
                 id

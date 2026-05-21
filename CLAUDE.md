@@ -14,13 +14,16 @@ testing criteria. The Hard rules below take precedence; the guide expands on the
 
 ## Build commands
 
-- `./gradlew build` — full build (compileKotlin → KSP → verifyPlugin → tests). Must pass
+- `./gradlew build` — full build (compileKotlin → KSP → tests + Kover verify). Must pass
   before any push.
 - `./gradlew buildPlugin` — produces the distributable zip at
   `build/distributions/ide-introspector-<version>.zip`. Hooks the doc generator too.
 - `./gradlew runIde` — launches a sandbox IDE for manual testing.
 - `./gradlew compileKotlin` — fastest feedback; also runs the KSP doc-processor so
   `docs/MCP_TOOLS.md` refreshes.
+- **Never run `./gradlew verifyPlugin` locally.** It downloads target IDEs (hundreds of
+  MB) and runs the IntelliJ Plugin Verifier — that's a CI-only task. If the IDE shows
+  you a verifier report, surface the findings and fix in source; don't re-run.
 
 ## Project layout
 
@@ -152,3 +155,19 @@ edit the source annotations.
 - **Modal dialogs and `invokeLater`**: `ModalityState.NON_MODAL` (the default) stalls
   behind ANY open modal — including our own exec-confirmation dialog. Always use
   `ModalityState.any()` for tool-handler EDT bounces.
+
+## Known plugin-verifier warnings (accepted, do not chase)
+
+The IntelliJ Plugin Verifier (CI-only — see Build commands) reports these every run; they
+are intentional trade-offs, not regressions.
+
+- **`GeneratedSerializer.typeParametersSerializers()` deprecated, ×N usages** — emitted
+  by every `$serializer` synthetic the Kotlin 2.1.20 serialization compiler plugin
+  generates for our `@Serializable` data classes. Disappears only when we move to a
+  Kotlin version whose serialization plugin targets the new API. Don't suppress
+  per-class with `@Suppress("DEPRECATION")` — that's noise on every model file.
+- **Bundles IDE package `org.jetbrains.concurrency`** — shaded into
+  `kotlin-compiler-embeddable`, which `kotlin-scripting-jsr223` pulls in as `runtimeOnly`
+  for Phase 2 (`exec.execute_kotlin_in_ide`). Stripping the package from the embedded
+  compiler breaks Kotlin script compilation. Live with the warning until Phase 2 moves
+  to an alternative compilation strategy.
