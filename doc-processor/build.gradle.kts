@@ -3,7 +3,7 @@ plugins {
 }
 
 dependencies {
-    implementation("com.google.devtools.ksp:symbol-processing-api:2.1.20-1.0.32")
+    implementation("com.google.devtools.ksp:symbol-processing-api:2.3.8")
 }
 
 kotlin {
