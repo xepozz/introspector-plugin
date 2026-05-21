@@ -26,6 +26,8 @@ kover {
                     "com.github.xepozz.introspectorplugin.toolwindow.*",   // Swing tool window
                     "com.github.xepozz.introspectorplugin.tools.*",        // MCP toolset entry points
                     "com.github.xepozz.introspectorplugin.exec.*",         // Kotlin runtime execution
+                    "com.github.xepozz.introspectorplugin.model.*",        // @Serializable data classes
+                    "com.github.xepozz.introspectorplugin.core.ClassSourceResolver*", // Java PSI heavy
                     "*\$\$serializer",                                      // kotlinx.serialization synthetics
                     "*Companion",                                           // boilerplate
                 )
@@ -46,7 +48,23 @@ dependencies {
     // kotlin-scripting-jsr223 pulls kotlin-compiler-embeddable transitively, which gives us
     // a self-contained compiler inside the plugin's classloader, isolated from the IDE's
     // bundled Kotlin plugin.
-    implementation("org.jetbrains.kotlin:kotlin-scripting-jsr223:2.1.20")
+    //
+    // `runtimeOnly` (NOT `implementation`) is critical for two reasons:
+    //   1. The code uses only javax.script.* (standard JDK) — kotlin-scripting-jsr223 is
+    //      discovered through META-INF/services at runtime, so we never need it at compile.
+    //   2. kotlin-compiler-embeddable bundles its OWN copy of IntelliJ platform resources
+    //      (kotlinx-coroutines 1.8.x, an older `messages/JavaPsiBundle.properties`, etc.).
+    //      If those land on testRuntimeClasspath, they shadow the real IDE's copies and
+    //      every BasePlatformTestCase setUp dies at NoSuchMethodError / missing-resource.
+    //      Marking it `runtimeOnly` keeps it on the production plugin jar but OFF the test
+    //      classpath — so the IDE-provided coroutines and resources win in tests.
+    runtimeOnly("org.jetbrains.kotlin:kotlin-scripting-jsr223:2.1.20") {
+        // Same shadowing problem: scripting transitively brings upstream coroutines 1.8.x
+        // which override the IDE's JetBrains-patched build, breaking the test JVM at
+        // `ContextKt.<clinit>` (NoSuchMethodError on limitedParallelism / runBlockingWith…).
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core")
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core-jvm")
+    }
 
     // docs/MCP_TOOLS.md generator — runs as part of compileKotlin; see doc-processor/.
     ksp(project(":doc-processor"))
@@ -56,13 +74,26 @@ dependencies {
     intellijPlatform {
         intellijIdea("2025.2.6.2")
         bundledPlugin("org.jetbrains.kotlin")
-        // com.intellij.java ships the Java PSI (PsiClass, JavaPsiFacade, ClassFileDecompilers).
-        // Required at compile time for code.* tools; at runtime they only load when the IDE
-        // includes the Java module — gated via META-INF/java-introspect.xml's optional depends.
         bundledPlugin("com.intellij.java")
         plugin("com.intellij.mcpServer", "252.28238.29")
         testFramework(TestFrameworkType.Platform)
+        testFramework(TestFrameworkType.Plugin.Java)
     }
+}
+
+// `runtimeOnly` puts the deps on production runtime AND testRuntimeClasspath (the latter
+// extends the former). kotlin-compiler-embeddable bundles an older
+// `messages/JavaPsiBundle.properties` (and other IntelliJ platform resources) that shadow
+// the IDE's modern ones during tests, triggering missing-resource errors during the
+// platform's FileTypeManager preload. Removing the scripting stack from test runtime is
+// safe because tests don't exec Kotlin scripts.
+configurations.testRuntimeClasspath {
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-compiler-embeddable")
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-scripting-jsr223")
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-scripting-compiler-embeddable")
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-scripting-compiler-impl-embeddable")
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-script-runtime")
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-daemon-embeddable")
 }
 
 intellijPlatform {
