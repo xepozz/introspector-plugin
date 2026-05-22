@@ -10,7 +10,7 @@ pluginManagement {
         id("org.jetbrains.kotlin.plugin.serialization") version "2.1.20"
         id("org.jetbrains.changelog") version "2.5.0"
         id("com.google.devtools.ksp") version "2.1.20-1.0.32"
-        id("org.jetbrains.kotlinx.kover") version "0.9.1"
+        id("org.jetbrains.kotlinx.kover") version "0.9.8"
     }
 }
 
