@@ -37,11 +37,13 @@ class HealthToolset : McpToolset {
         |Returns: {
         |  dumbMode: Boolean,            // true if ANY open project is in dumb mode
         |  isStartupComplete: Boolean,   // true once every open project finished post-startup
-        |  currentTask: String?,         // human-readable current dumb-mode task, if any
-        |  queuedTasks: Int,             // dumb-mode tasks queued behind the current one
-        |  projectsIndexing: [{ projectName, projectHash, dumbModeActive,
-        |                       indexingActive, scanningActive, currentTask? }]
+        |  projectsIndexing: [{ projectName, projectHash, dumbModeActive, scanningActive }]
         |}
+        |
+        |Notes: per-task descriptions and queued-task counts are intentionally not exposed —
+        |the only stable APIs JetBrains ships (`DumbService.isDumb` plus
+        |`UnindexedFilesScannerExecutor.isRunning`) cover the "should I wait?" question
+        |without depending on private internal queue fields that move between IDE versions.
         |
         |Examples:
         |  health.indexing_status                                # all open projects

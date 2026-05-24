@@ -17,10 +17,6 @@ data class IndexingStatus(
     val dumbMode: Boolean,
     /** True once every open project finished its post-startup activities. */
     val isStartupComplete: Boolean,
-    /** Human-readable description of the current dumb-mode task, if any. */
-    val currentTask: String? = null,
-    /** Dumb-mode tasks queued behind the current one. May be 0 even while indexing. */
-    val queuedTasks: Int = 0,
     /** Per-project breakdown — one entry per open project (empty if no projects open). */
     val projectsIndexing: List<ProjectIndexingState> = emptyList(),
 )
@@ -33,12 +29,8 @@ data class ProjectIndexingState(
     val projectHash: String,
     /** True if the project is currently in dumb mode (PSI / index access restricted). */
     val dumbModeActive: Boolean,
-    /** True if a dumb-mode task is currently running (best-effort; may be false during scan). */
-    val indexingActive: Boolean,
     /** True if `UnindexedFilesScannerExecutor` is scanning for files to index. */
     val scanningActive: Boolean,
-    /** Current dumb-mode task description for THIS project, if any. */
-    val currentTask: String? = null,
 )
 
 /** JVM memory + IDE-level JMX counters; cheap snapshot suitable for polling. */

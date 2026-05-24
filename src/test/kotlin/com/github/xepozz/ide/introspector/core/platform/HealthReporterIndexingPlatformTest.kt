@@ -1,7 +1,9 @@
 package com.github.xepozz.ide.introspector.core.platform
 
 import com.github.xepozz.ide.introspector.core.HealthReporter
+import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.ProjectManager
+import com.intellij.testFramework.DumbModeTestUtils
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 
 /**
@@ -25,7 +27,7 @@ class HealthReporterIndexingPlatformTest : BasePlatformTestCase() {
     fun testFreshFixtureIsNotDumb() {
         val status = HealthReporter.indexingStatus()
         assertFalse(
-            "Fresh BasePlatformTestCase project must not report dumb mode; got currentTask=${status.currentTask}",
+            "Fresh BasePlatformTestCase project must not report dumb mode",
             status.dumbMode,
         )
         assertTrue(
@@ -50,12 +52,6 @@ class HealthReporterIndexingPlatformTest : BasePlatformTestCase() {
             assertFalse(
                 "Per-project dumbModeActive must be false for fresh fixture, got entry=$entry",
                 entry.dumbModeActive,
-            )
-            // Indexing should not be active if dumb mode is off — guards the reporter's invariant
-            // that `indexingActive` implies `dumbModeActive`.
-            assertFalse(
-                "indexingActive must be false when dumbModeActive is false (entry=$entry)",
-                entry.indexingActive,
             )
             assertTrue(
                 "projectName must be non-blank, got '${entry.projectName}'",
@@ -96,9 +92,8 @@ class HealthReporterIndexingPlatformTest : BasePlatformTestCase() {
     }
 
     fun testReflectionGuardDoesNotThrowOnTestSdk() {
-        // Calling `indexingStatus` exercises both the `UnindexedFilesScannerExecutor` and the
-        // `DumbServiceImpl#queuedTasksCount` reflection probes. Neither must throw — if they
-        // do, the reporter is broken on the test SDK.
+        // Calling `indexingStatus` exercises the `UnindexedFilesScannerExecutor` reflection
+        // probe. It must not throw — if it does, the reporter is broken on the test SDK.
         val status = HealthReporter.indexingStatus()
         assertNotNull("indexingStatus must always return a value, even when scanner probe fails", status)
         // scanningActive defaults to false when the scanner class is unavailable — assert the
@@ -121,9 +116,53 @@ class HealthReporterIndexingPlatformTest : BasePlatformTestCase() {
         )
         assertFalse("With no projects, dumbMode is false", status.dumbMode)
         assertTrue("With no projects, isStartupComplete is trivially true", status.isStartupComplete)
-        assertEquals("With no projects, queuedTasks is 0", 0, status.queuedTasks)
-        assertNull("With no projects, currentTask is null", status.currentTask)
         assertTrue("With no projects, breakdown is empty", status.projectsIndexing.isEmpty())
+    }
+
+    fun testDumbModeFlipsReporterAndUnindexedScannerClassResolves() {
+        // The `UnindexedFilesScannerExecutor` interface must be resolvable on the
+        // test SDK at the canonical FQN — if not, `scanningActive` is dead.
+        // (The probe itself must not throw; behaviour while *actually* scanning is hard
+        // to deterministically trigger from a unit test, so we lock in the FQN here.)
+        val scannerClass = runCatching {
+            Class.forName(
+                "com.intellij.openapi.project.UnindexedFilesScannerExecutor",
+                false,
+                HealthReporter::class.java.classLoader,
+            )
+        }.getOrNull()
+        assertNotNull(
+            "UnindexedFilesScannerExecutor must be resolvable at " +
+                "com.intellij.openapi.project.UnindexedFilesScannerExecutor on the test SDK; " +
+                "without it, ProjectIndexingState.scanningActive is permanently false.",
+            scannerClass,
+        )
+
+        // Now flip dumb mode on the fixture and assert the reporter sees it. This guards
+        // against future regressions where `dumbModeActive` silently goes dead.
+        DumbModeTestUtils.runInDumbModeSynchronously(project) {
+            assertTrue(
+                "Sanity: DumbService.isDumb must be true inside runInDumbModeSynchronously",
+                DumbService.getInstance(project).isDumb,
+            )
+            val statusInDumb = HealthReporter.indexingStatus()
+            assertTrue(
+                "Top-level dumbMode must be true while the fixture project is in dumb mode",
+                statusInDumb.dumbMode,
+            )
+            val entry = statusInDumb.projectsIndexing.first { it.projectHash == project.locationHash }
+            assertTrue(
+                "Per-project dumbModeActive must be true for the dumb fixture, got $entry",
+                entry.dumbModeActive,
+            )
+        }
+
+        // After leaving dumb mode, the reporter must report quiescent state again.
+        val statusAfter = HealthReporter.indexingStatus()
+        assertFalse(
+            "Top-level dumbMode must be false again once runInDumbModeSynchronously returns",
+            statusAfter.dumbMode,
+        )
     }
 
     fun testReporterIsConsistentAcrossCallsWithoutProjectMutation() {
