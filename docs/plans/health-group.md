@@ -171,27 +171,26 @@ Memory (JDK only, all thread-safe): `ManagementFactory.getMemoryMXBean()`
 
 | Path | Op | What |
 |------|----|------|
-| `src/main/kotlin/.../tools/HealthToolset.kt` | Create | `McpToolset` with the two `@McpTool` methods; delegates to `HealthReporter`. |
-| `src/main/kotlin/.../core/HealthReporter.kt` | Create | Pure logic. Memory path uses only `java.lang.management`; indexing path uses `DumbService` / `StartupManager` / `ProjectManager` + reflection guards for internals. |
+| `src/main/kotlin/.../tools/HealthToolset.kt` | Create | `McpToolset` w/ both `@McpTool` methods; delegates to `HealthReporter`. |
+| `src/main/kotlin/.../core/HealthReporter.kt` | Create | Pure logic — `java.lang.management` for memory; `DumbService`/`StartupManager`/`ProjectManager` + reflection guards for indexing. |
 | `src/main/kotlin/.../model/HealthInfo.kt` | Create | All `@Serializable` response types above. |
-| `src/main/resources/META-INF/mcp-integration.xml` | Edit | Add `<mcpServer.mcpToolset implementation="…HealthToolset"/>`. No new `<depends>` line — both tools rely only on the core platform. |
+| `src/main/resources/META-INF/mcp-integration.xml` | Edit | Add `<mcpServer.mcpToolset implementation="…HealthToolset"/>`. No new `<depends>` — core platform only. |
 | `src/test/kotlin/.../core/HealthReporterMemoryTest.kt` | Create | Unit. |
 | `src/test/kotlin/.../core/platform/HealthReporterIndexingPlatformTest.kt` | Create | `BasePlatformTestCase`. |
 
 ## Test plan
 
-Unit (`HealthReporterMemoryTest`, pure JVM):
-1. `memory()` returns `heap.used > 0` and `heap.max > heap.used`.
-2. `gcs` non-empty; every `name` non-blank.
-3. `uptimeFormatted` matches `"Xh Ym Zs"` / `"Ym Zs"` / `"Zs"` patterns.
-4. `gcBeforeRead=true` succeeds (no exception when GC is a no-op).
-5. Metaspace fallback: with a synthetic empty pool list, returns `(0, -1, 0, 0)`.
+Unit (`HealthReporterMemoryTest`, pure JVM): (1) `memory()` returns
+`heap.used > 0` and `heap.max > heap.used`; (2) `gcs` non-empty, every `name`
+non-blank; (3) `uptimeFormatted` matches `"Xh Ym Zs"` / `"Ym Zs"` / `"Zs"`;
+(4) `gcBeforeRead=true` succeeds (no exception when GC is a no-op);
+(5) metaspace fallback: with a synthetic empty pool list, returns `(0, -1, 0, 0)`.
 
 Platform (`HealthReporterIndexingPlatformTest` extends `BasePlatformTestCase`):
-1. Fresh fixture → `dumbMode=false`, `isStartupComplete=true`,
-   `projectsIndexing.size == 1`.
-2. `projectHash` filter: fixture's `locationHash` matches; `"nonsense"` returns empty.
-3. Reflection guard: scanner check does not throw on the test SDK.
+(1) fresh fixture → `dumbMode=false`, `isStartupComplete=true`,
+`projectsIndexing.size == 1`; (2) `projectHash` filter — fixture's
+`locationHash` matches, `"nonsense"` returns empty; (3) reflection guard —
+scanner check does not throw on the test SDK.
 
 ## Estimated effort
 
@@ -219,11 +218,9 @@ regeneration 30 min.
 
 ## References
 
-- Existing toolset pattern: `tools/ArchitectureToolset.kt` (same constructor-less
-  `McpToolset` shape).
-- Existing pure-logic reporter: `core/PluginInventory.kt` (used by both an
-  `McpToolset` and the Platform Explorer tool window; `HealthReporter` follows
-  the same shape).
+- Toolset pattern: `tools/ArchitectureToolset.kt`. Pure-logic reporter shape:
+  `core/PluginInventory.kt` (also reusable from the Platform Explorer tool
+  window — `HealthReporter` should follow it).
 - IntelliJ source: `platform/core-api/src/com/intellij/openapi/project/DumbService.kt`
   on `github.com/JetBrains/intellij-community`.
 - JetBrains MCP equivalent: **none** — pure-additive group.

@@ -132,19 +132,8 @@ suspend fun editor_get_state(
 
 ## Args + response models
 
-`model/args/EditorArgs.kt`:
-
-```kotlin
-@Serializable data class SetCaretArgs(
-    val fileUrl: String?, val offset: Int?, val line: Int?, val column: Int = 1,
-    val scrollToVisible: Boolean = true,
-)
-@Serializable data class GetStateArgs(
-    val fileUrl: String?, val includeMultipleCarets: Boolean = true,
-    val includeFolding: Boolean = true, val includeInlays: Boolean = false,
-    val gutterMinSeverity: String = "WARNING",
-)
-```
+`model/args/EditorArgs.kt` — `SetCaretArgs` / `GetStateArgs` mirror the tool
+signatures; both `@Serializable`.
 
 `model/EditorInfo.kt`:
 
@@ -152,16 +141,16 @@ suspend fun editor_get_state(
 @Serializable data class SetCaretResponse(
     val ok: Boolean, val fileUrl: String,
     val oldOffset: Int, val newOffset: Int,
-    val line: Int, val column: Int,           // 1-based, post-clamp
+    val line: Int, val column: Int,             // 1-based, post-clamp
     val madeVisible: Boolean, val clamped: Boolean,
 )
 @Serializable data class EditorState(
     val fileUrl: String,
-    val carets: List<CaretInfo>,                  // primary first
-    val selection: SelectionInfo?,                // null when no selection
-    val visibleRange: LineRange?,                 // 1-based logical lines
-    val foldedRanges: List<FoldInfo>?,            // null when includeFolding=false
-    val inlayCounts: InlayCountSummary?,          // null when includeInlays=false
+    val carets: List<CaretInfo>,                 // primary first
+    val selection: SelectionInfo?,               // null = no selection
+    val visibleRange: LineRange?,                // 1-based logical lines
+    val foldedRanges: List<FoldInfo>?,           // null when includeFolding=false
+    val inlayCounts: InlayCountSummary?,         // null when includeInlays=false
     val gutterMarkers: List<GutterMarkerInfo>?,
 )
 @Serializable data class CaretInfo(
@@ -173,8 +162,7 @@ suspend fun editor_get_state(
 )
 @Serializable data class LineRange(val startLine: Int, val endLine: Int)
 @Serializable data class FoldInfo(
-    val startOffset: Int, val endOffset: Int,
-    val startLine: Int, val endLine: Int,
+    val startOffset: Int, val endOffset: Int, val startLine: Int, val endLine: Int,
     val placeholder: String, val expanded: Boolean,
 )
 @Serializable data class InlayCountSummary(
@@ -270,29 +258,27 @@ Add one line to `src/main/resources/META-INF/mcp-integration.xml`:
 ## Test plan
 
 **Unit** (no IntelliJ runtime):
-- `gutterMinSeverity` parser: "ERROR" → HighlightSeverity.ERROR, "ALL" → INFORMATION
-  floor, invalid → IllegalArgumentException.
+- `gutterMinSeverity` parser: "ERROR" → HighlightSeverity.ERROR, "ALL" →
+  INFORMATION floor, invalid → IllegalArgumentException.
 - Line/column clamp helper: out-of-range clamps + sets `clamped=true`.
-- Inlay-count aggregation: given fake lists, `total == inline + block + afterLineEnd`.
+- Inlay-count aggregation: `total == inline + block + afterLineEnd`.
 
-**Platform** (extends `BasePlatformTestCase`, fixture file under
+**Platform** (extends `BasePlatformTestCase`, fixtures under
 `src/test/testData/editor/`):
-1. **`set_caret` happy path** — `(line=3, column=14)` on `Sample.java` → assert
+1. `set_caret` happy path — `(line=3, column=14)` on `Sample.java` → assert
    `caretModel.logicalPosition == (2,13)`, `oldOffset != newOffset`, `clamped=false`.
-2. **`set_caret` clamp** — `(line=9999, column=1)` → `clamped=true`, caret at last
-   line, no exception.
-3. **`set_caret` file-not-open** — file not in `FileEditorManager.openFiles`,
-   expect `McpExpectedError("File not open: …")`.
-4. **`get_state` after `set_caret`** — move to (5,1), `get_state()` returns
-   `carets[0].line == 5`, `selection == null`, `visibleRange` brackets line 5.
-5. **`get_state` with selection** — `editor.selectionModel.setSelection(…)`,
-   `get_state()` → `selection.length` matches.
-6. **`get_state` with folding** — add a fold via `foldingModel.runBatchFoldingOperation`,
-   `get_state(includeFolding=true)` → `foldedRanges` has the region, `expanded=false`.
-7. **`get_state` gutter markers** — fixture with `int x = "bad";`, restart daemon
-   and `UIUtil.dispatchAllInvocationEvents()` (≤5 s), expect at least one
-   `gutterMarkers[]` entry with `severity="ERROR"`.
-8. **Binary-file rejection** — open an image; expect
+2. `set_caret` clamp — `(line=9999, column=1)` → `clamped=true`, caret at last line.
+3. `set_caret` file-not-open — expect `McpExpectedError("File not open: …")`.
+4. `get_state` after `set_caret` — move to (5,1) → `carets[0].line == 5`,
+   `selection == null`, `visibleRange` brackets line 5.
+5. `get_state` with selection — `selectionModel.setSelection(…)` →
+   `selection.length` matches.
+6. `get_state` with folding — add a fold via `runBatchFoldingOperation` →
+   `foldedRanges` contains it with `expanded=false`.
+7. `get_state` gutter markers — fixture with `int x = "bad";`, restart daemon +
+   `UIUtil.dispatchAllInvocationEvents()` (≤5 s), expect ≥1 entry with
+   `severity="ERROR"`.
+8. Binary-file rejection — open an image, expect
    `McpExpectedError("File is not a text editor…")`.
 
 ## Estimated effort
@@ -310,20 +296,18 @@ Add one line to `src/main/resources/META-INF/mcp-integration.xml`:
    precedent. Already in the signature.
 2. **`get_state` returns the current line's text content?** Recommend **yes, but
    guarded** — add `includeCurrentLineText: Boolean = false` in v1.1; trivial
-   (`document.getText(lineStartOffset..lineEndOffset)`). Skipping in v1 keeps
-   responses small and avoids text the agent likely has from `psi.get_structure`.
+   (`document.getText(lineStartOffset..lineEndOffset)`). Skip in v1 to keep responses
+   small and avoid duplicating text the agent likely has from `psi.get_structure`.
 3. **`editor.scroll_to(line)` as a third tool?** Cheap, but
-   `set_caret(scrollToVisible=true)` already covers the common case. Defer until
-   user-requested.
-4. **`DaemonCodeAnalyzerImpl` is `@ApiStatus.Internal`.** If JetBrains breaks it,
-   swap to `MarkupModelEx.processRangeHighlightersOverlappingWith` filtered by
-   daemon-owned tooltip renderer. Document the fallback in the Inspector.
-5. **Split-view targeting (v2).** Today we pick `selectedEditor`. Add an optional
-   `splitIndex: Int?` later if users need it — requires `FileEditorManagerEx.windows`
-   enumeration.
+   `set_caret(scrollToVisible=true)` covers the common case. Defer until requested.
+4. **`DaemonCodeAnalyzerImpl` is `@ApiStatus.Internal`.** If it breaks, swap to
+   `MarkupModelEx.processRangeHighlightersOverlappingWith` filtered by daemon-owned
+   tooltip renderer. Document the fallback in the Inspector.
+5. **Split-view targeting (v2).** Add optional `splitIndex: Int?` later if users
+   need it — would require `FileEditorManagerEx.windows` enumeration.
 6. **"Reversible" wording.** `set_caret` is not Ctrl-Z-reversible (caret moves
-   aren't undoable in IntelliJ); "reversible" means the caller can restore via a
-   second tool call using `oldOffset`.
+   aren't undoable in IntelliJ); means "the caller can restore via a second tool
+   call using `oldOffset`".
 
 ## References
 

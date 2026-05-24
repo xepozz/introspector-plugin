@@ -243,36 +243,36 @@ Hard 10 s cap:
 
 ## Test plan
 
-**`LogReaderTest.kt`** — pure JVM, multi-line string fixtures:
+**`LogReaderTest.kt`** — pure JVM, fixture strings:
 
 - parses a vanilla IDEA log line into `LogLine(parsed=true, …)` with all fields.
 - treats `\tat com.foo.Bar.baz(Bar.kt:42)` as `parsed=false`.
-- `groupByThrowable=true` collapses ERROR + 5 `\tat` + `Caused by:` + 3 more
-  `\tat` into one `ErrorEntry` with full `stacktrace`.
-- `groupByThrowable=false` yields one entry per ERROR, drops continuations.
-- severity "WARN" excludes INFO/DEBUG, includes WARN/ERROR.
-- `categoryContains` is case-insensitive.
-- regex `(a+)+b` against all-a's line times out and is treated as non-match.
-- invalid regex `[unclosed` is silently ignored.
-- redaction masks `Bearer abc123def`, sets `redacted=true`.
-- redaction skips short non-secret `token=abc` (length floor).
+- `groupByThrowable=true` collapses ERROR + `\tat` × 5 + `Caused by:` + `\tat`
+  × 3 into one `ErrorEntry` with full `stacktrace`.
+- `groupByThrowable=false` ⇒ one entry per ERROR, drops continuations.
+- severity "WARN" excludes INFO/DEBUG.
+- `categoryContains` case-insensitive.
+- regex `(a+)+b` against all-a's line times out ⇒ non-match.
+- invalid regex `[unclosed` silently ignored.
+- redaction masks `Bearer abc123def`, sets `redacted=true`; skips short
+  `token=abc` via length floor.
 - `sinceIsoTimestamp` cutoff prunes earlier lines.
 - malformed `sinceIsoTimestamp` falls back to `lastMinutes`.
 
-**`LogReaderTailTest.kt`** — temp-file backed:
+**`LogReaderTailTest.kt`** — `@TempDir`:
 
-- 3 MB fixture, `tail(lines=100)` returns exactly the last 100.
-- 10-line file, `tail(lines=1000)` returns 10, `truncated=false`.
+- 3 MB fixture, `tail(lines=100)` ⇒ exactly the last 100.
+- 10-line file, `tail(lines=1000)` ⇒ 10, `truncated=false`.
 - 0-byte file ⇒ empty, `logPath` populated.
 - no file ⇒ empty, expected `logPath`.
-- emoji straddling the tail-buffer boundary — no `MalformedInputException`,
-  no garbled chars in `raw`.
-- `idea.log` + `idea.log.1`, `errors_since` cutoff predating rotation —
-  both walked, ordering oldest-first.
-- 4 × 3 MB rotation files — only first ~8 MB scanned, `truncated=true`.
+- emoji straddling tail-buffer boundary ⇒ no `MalformedInputException` /
+  garbled chars.
+- `idea.log` + `idea.log.1`, `errors_since` cutoff predating rotation ⇒ both
+  walked, ordering oldest-first.
+- 4 × 3 MB rotations ⇒ only first ~8 MB scanned, `truncated=true`.
 
-Toolset wrappers are thin enough not to need a separate test class. One `runIde`
-manual smoke (trigger an exception, call `log_errors_since`) closes the loop.
+Toolset wrappers thin enough — no separate test class. One `runIde` smoke
+(trigger an exception, call `log_errors_since`) closes the loop.
 
 ## Estimated effort
 
@@ -289,35 +289,28 @@ manual smoke (trigger an exception, call `log_errors_since`) closes the loop.
 
 ## Open questions / risks
 
-1. **JSON-shaped log lines** — some loggers emit structured JSON instead of the
-   standard layout. **Skip for v1** — too niche; `raw` still surfaces them.
+1. **JSON-shaped log lines** — some loggers emit JSON instead of the standard
+   layout. **Skip for v1**; `raw` still surfaces them.
 2. **Follow rotations for `log.tail`?** — would make `lines=N` "complete" across
-   a fresh rotation but doubles I/O for the 99 % of calls that don't need it.
-   **NO for v1**, optional v2 via `followRotations: Boolean = false`.
-   `log.errors_since` walks rotations (cap 5) because the question spans time.
+   a fresh rotation but doubles I/O for the 99 % case. **NO for v1**, optional
+   v2 via `followRotations: Boolean = false`. `log.errors_since` walks
+   rotations (cap 5) because the question spans time.
 3. **Secret redaction** — recommend **on by default** with fixed regex set
-   (Bearer / Authorization / token= / jba_auth=). Token-leak cost ≫ occasional
-   false-positive mask. Surface `redacted=true` for audit. Configurability
-   (extra patterns, opt-out) is v2 work via `IntrospectorSettings`.
-4. **Unify both tools with a `since` arg on `log.tail`?** — Rejected. Different
-   defaults (N-bounded vs time-bounded), shapes (lines vs grouped errors),
-   and I/O profiles. Two focused tools beat one swiss-army knife.
-5. **Live-tail / follow mode** — out of scope. MCP tools are request-response.
-6. **`PathManager.getLogPath()` in unit tests** — returns a mock path with no
-   IDE. `LogReader` takes the file path as a constructor arg so tests inject a
-   `@TempDir` file; only `LogToolset` wrapper calls `PathManager`.
+   (Bearer / Authorization / token= / jba_auth=). Token-leak cost ≫ false
+   positives. Surface `redacted=true` for audit. Configurability (extra
+   patterns, opt-out) is v2 via `IntrospectorSettings`.
+4. **Unify with a `since` arg on `log.tail`?** — Rejected. Different defaults,
+   shapes, I/O profiles. Two focused tools beat one swiss-army knife.
+5. **Live-tail / follow mode** — out of scope. MCP is request-response.
+6. **`PathManager.getLogPath()` in unit tests** — returns a mock path without
+   an IDE. `LogReader` takes the file path as a ctor arg so tests inject a
+   `@TempDir` file; only `LogToolset` calls `PathManager`.
 
 ## References
 
-- Existing code:
-  - `tools/ArchitectureToolset.kt` — class shape for the new `LogToolset`.
-  - `exec/AuditLogger.kt` — what `log.tail` will most often surface
-    (`ide-introspector-audit` category).
-  - `util/Utf8Truncation.kt` — `maxBytes` cap + UTF-8-safe tail-buffer trimming.
-- IntelliJ source:
-  - `PathManager`: https://github.com/JetBrains/intellij-community/blob/master/platform/util/src/com/intellij/openapi/application/PathManager.java
-  - Layout: `bin/log.xml` in any IDE install — confirms the
-    `yyyy-MM-dd HH:mm:ss,SSS [thread] LEVEL - category - msg` format.
+- `tools/ArchitectureToolset.kt` — class shape for `LogToolset`.
+- `exec/AuditLogger.kt` — what `log.tail` will most often surface.
+- `util/Utf8Truncation.kt` — `maxBytes` cap + UTF-8-safe boundary trimming.
+- `PathManager`: https://github.com/JetBrains/intellij-community/blob/master/platform/util/src/com/intellij/openapi/application/PathManager.java
 - JetBrains MCP equivalent: **none**. Closest is
-  `execute_action_by_id("ShowLog")` which opens the file in Finder — useless
-  for an agent.
+  `execute_action_by_id("ShowLog")` (opens in Finder — useless for an agent).

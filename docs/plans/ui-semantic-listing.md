@@ -55,23 +55,16 @@ suspend fun ui_list_tool_windows(
 
 **Response model (new file `model/ToolWindowInfo.kt`):**
 ```kotlin
-@Serializable
-data class ToolWindowsResponse(
+@Serializable data class ToolWindowsResponse(
     val toolWindows: List<ToolWindowInfo>,
     val project: String? = null,        // Project.name; null when no focused project
-    val warnings: List<String> = emptyList(),
-)
-@Serializable
-data class ToolWindowInfo(
+    val warnings: List<String> = emptyList())
+@Serializable data class ToolWindowInfo(
     val id: String, val displayName: String,
     val anchor: String,                 // LEFT | RIGHT | BOTTOM | TOP
     val type: String,                   // DOCKED | FLOATING | SLIDING | WINDOWED
-    val isVisible: Boolean, val isActive: Boolean,
-    val isSplit: Boolean, val isFloating: Boolean,
-    val iconPath: String? = null,
-    val contentCount: Int,
-    val providedByPluginId: String? = null,
-)
+    val isVisible: Boolean, val isActive: Boolean, val isSplit: Boolean, val isFloating: Boolean,
+    val iconPath: String? = null, val contentCount: Int, val providedByPluginId: String? = null)
 ```
 
 ### `ui.list_dialogs`
@@ -114,19 +107,14 @@ suspend fun ui_list_dialogs(
 
 **Response model (new file `model/DialogInfo.kt`):**
 ```kotlin
-@Serializable
-data class DialogsResponse(
-    val dialogs: List<DialogInfo>,
-    val warnings: List<String> = emptyList(),
-)
-@Serializable
-data class DialogInfo(
+@Serializable data class DialogsResponse(
+    val dialogs: List<DialogInfo>, val warnings: List<String> = emptyList())
+@Serializable data class DialogInfo(
     val id: String,                     // ComponentRegistry id, reusable across ui.*
     val title: String? = null,
     val isModal: Boolean, val isResizable: Boolean, val isShowing: Boolean,
     val bounds: Bounds,                 // existing model/Bounds.kt
-    val contentClass: String,           // DialogWrapper FQN if resolvable, else Dialog FQN
-)
+    val contentClass: String)           // DialogWrapper FQN if resolvable, else Dialog FQN
 ```
 
 ## IntelliJ APIs used
