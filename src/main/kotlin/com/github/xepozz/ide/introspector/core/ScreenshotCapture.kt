@@ -110,19 +110,13 @@ object ScreenshotCapture {
         label: String? = null,
     ): HighlightResult {
         val warnings = mutableListOf<String>()
-        // Ensure a writable ARGB copy — paint() output is already TYPE_INT_ARGB but some
-        // callers (e.g. Robot screen captures) may hand us TYPE_INT_RGB / TYPE_3BYTE_BGR.
-        val out = if (base.type == BufferedImage.TYPE_INT_ARGB) {
-            val copy = BufferedImage(base.width, base.height, BufferedImage.TYPE_INT_ARGB)
-            val cg = copy.createGraphics()
-            try { cg.drawImage(base, 0, 0, null) } finally { cg.dispose() }
-            copy
-        } else {
-            val copy = BufferedImage(base.width, base.height, BufferedImage.TYPE_INT_ARGB)
-            val cg = copy.createGraphics()
-            try { cg.drawImage(base, 0, 0, null) } finally { cg.dispose() }
-            copy
-        }
+        // Always allocate a fresh writable ARGB copy. `drawHighlight`'s contract is "returns
+        // a COPY" (enforced by `ScreenshotHighlightTest#base image is not mutated`); the
+        // unconditional copy keeps callers safe regardless of [base]'s underlying type
+        // (TYPE_INT_ARGB from paint(), TYPE_INT_RGB / TYPE_3BYTE_BGR from Robot captures).
+        val out = BufferedImage(base.width, base.height, BufferedImage.TYPE_INT_ARGB)
+        val cg = out.createGraphics()
+        try { cg.drawImage(base, 0, 0, null) } finally { cg.dispose() }
         val clampedThickness = thickness.coerceIn(1, 20)
         val imageRect = Rectangle(0, 0, out.width, out.height)
         val zeroArea = bounds.width <= 0 || bounds.height <= 0
