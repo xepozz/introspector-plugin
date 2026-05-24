@@ -9,11 +9,17 @@ import javax.swing.JComponent
 
 class ExecSettingsConfigurable : Configurable {
 
+    // ---- Tier 2: Kotlin runtime execution ----
     private var enabledBox: JBCheckBox? = null
     private var confirmBox: JBCheckBox? = null
     private var auditBox: JBCheckBox? = null
     private var defaultTimeoutField: JBTextField? = null
     private var maxTimeoutField: JBTextField? = null
+
+    // ---- Tier 2: UI action invocation ----
+    private var uiActionEnabledBox: JBCheckBox? = null
+    private var uiActionConfirmBox: JBCheckBox? = null
+    private var uiActionAuditBox: JBCheckBox? = null
 
     override fun getDisplayName(): String = "IDE Introspector"
 
@@ -31,6 +37,16 @@ class ExecSettingsConfigurable : Configurable {
         defaultTimeoutField = defaultTimeout
         maxTimeoutField = maxTimeout
 
+        // Second labelled section: UI action invocation. SAME security category as Tier 2
+        // exec — both opt-in, both per-call confirmation, both audited.
+        val u = UiActionSettings.getInstance()
+        val uiEnabled = JBCheckBox("Allow UI action invocation via ui.invoke_action_on", u.enabled)
+        val uiConfirm = JBCheckBox("Show confirmation dialog before each action", u.requireConfirmation)
+        val uiAudit = JBCheckBox("Write each action invocation to the IDE log (audit)", u.auditEnabled)
+        uiActionEnabledBox = uiEnabled
+        uiActionConfirmBox = uiConfirm
+        uiActionAuditBox = uiAudit
+
         return FormBuilder.createFormBuilder()
             .addComponent(JBLabel("Tier 2: Runtime Kotlin execution"))
             .addComponent(enabled)
@@ -38,17 +54,26 @@ class ExecSettingsConfigurable : Configurable {
             .addComponent(audit)
             .addLabeledComponent("Default timeout (ms)", defaultTimeout)
             .addLabeledComponent("Maximum timeout (ms)", maxTimeout)
+            .addSeparator(8)
+            .addComponent(JBLabel("Tier 2: UI action invocation"))
+            .addComponent(uiEnabled)
+            .addComponent(uiConfirm)
+            .addComponent(uiAudit)
             .addComponentFillVertically(javax.swing.JPanel(), 0)
             .panel
     }
 
     override fun isModified(): Boolean {
         val s = ExecSettings.getInstance()
+        val u = UiActionSettings.getInstance()
         return s.enabled != enabledBox?.isSelected ||
             s.requireConfirmation != confirmBox?.isSelected ||
             s.auditEnabled != auditBox?.isSelected ||
             s.defaultTimeoutMs.toString() != defaultTimeoutField?.text?.trim() ||
-            s.maxTimeoutMs.toString() != maxTimeoutField?.text?.trim()
+            s.maxTimeoutMs.toString() != maxTimeoutField?.text?.trim() ||
+            u.enabled != uiActionEnabledBox?.isSelected ||
+            u.requireConfirmation != uiActionConfirmBox?.isSelected ||
+            u.auditEnabled != uiActionAuditBox?.isSelected
     }
 
     override fun apply() {
@@ -60,6 +85,11 @@ class ExecSettingsConfigurable : Configurable {
         // guard; ExecSettings.maxTimeoutMs in code already defaults to MAX_TIMEOUT_MS.
         s.defaultTimeoutMs = readTimeoutMs(defaultTimeoutField?.text)
         s.maxTimeoutMs = readTimeoutMs(maxTimeoutField?.text)
+
+        val u = UiActionSettings.getInstance()
+        u.enabled = uiActionEnabledBox?.isSelected ?: false
+        u.requireConfirmation = uiActionConfirmBox?.isSelected ?: true
+        u.auditEnabled = uiActionAuditBox?.isSelected ?: true
     }
 
     private fun readTimeoutMs(input: String?): Long =
@@ -77,5 +107,10 @@ class ExecSettingsConfigurable : Configurable {
         auditBox?.isSelected = s.auditEnabled
         defaultTimeoutField?.text = s.defaultTimeoutMs.toString()
         maxTimeoutField?.text = s.maxTimeoutMs.toString()
+
+        val u = UiActionSettings.getInstance()
+        uiActionEnabledBox?.isSelected = u.enabled
+        uiActionConfirmBox?.isSelected = u.requireConfirmation
+        uiActionAuditBox?.isSelected = u.auditEnabled
     }
 }

@@ -5,31 +5,50 @@ import com.github.xepozz.ide.introspector.core.ComponentSerializer
 import com.github.xepozz.ide.introspector.core.ComponentTreeWalker
 import com.github.xepozz.ide.introspector.core.DialogInspector
 import com.github.xepozz.ide.introspector.core.ToolWindowInspector
+import com.github.xepozz.ide.introspector.core.UiActionInvoker
 import com.github.xepozz.ide.introspector.core.XPathMatcher
+import com.github.xepozz.ide.introspector.exec.AuditLogger
+import com.github.xepozz.ide.introspector.exec.UiActionBlocklist
+import com.github.xepozz.ide.introspector.exec.UiActionConfirmationManager
+import com.github.xepozz.ide.introspector.exec.UiActionSettings
 import com.github.xepozz.ide.introspector.model.ComponentInfo
 import com.github.xepozz.ide.introspector.model.ComponentProperty
 import com.github.xepozz.ide.introspector.model.DialogsResponse
 import com.github.xepozz.ide.introspector.model.FindComponentsResponse
 import com.github.xepozz.ide.introspector.model.ToolWindowsResponse
+import com.github.xepozz.ide.introspector.model.InvokeActionResponse
 import com.github.xepozz.ide.introspector.model.UiTreeResponse
+import com.github.xepozz.ide.introspector.util.DEFAULT_EDT_TIMEOUT_MS
 import com.github.xepozz.ide.introspector.util.onEdtBlocking
+import com.intellij.ide.plugins.PluginManagerCore
+import com.intellij.mcpserver.McpExpectedError
 import com.intellij.mcpserver.McpToolset
 import com.intellij.mcpserver.annotations.McpDescription
 import com.intellij.mcpserver.annotations.McpTool
+import com.intellij.mcpserver.projectOrNull
 import java.awt.Component
 import java.awt.Point
 import java.awt.Window
+import java.util.concurrent.TimeoutException
 import javax.accessibility.Accessible
 import javax.swing.AbstractButton
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.SwingUtilities
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 /**
  * MCP toolset for UI introspection. Methods are exposed by the bundled MCP server's
  * ReflectionToolsProvider — the snake_case method name becomes the tool name when
  * [McpTool.name] is not set. We override `name` to keep the grouped `ui.*` namespace.
+ *
+ * All methods EXCEPT [ui_invoke_action_on] are pure read operations against the live Swing
+ * tree (safe to call at any time, no side effects). [ui_invoke_action_on] is the one
+ * privileged WRITE entry point — it mirrors the opt-in pattern of `ExecToolset` (off by
+ * default in [UiActionSettings], per-call modal confirmation, blocklist double-prompt,
+ * audited, hard 10 s timeout via `onEdtBlocking`).
  */
 class UiInspectorToolset : McpToolset {
 
@@ -321,6 +340,194 @@ class UiInspectorToolset : McpToolset {
         val properties: List<ComponentProperty>,
         val warnings: List<String> = emptyList(),
     )
+
+    @McpTool(name = "ui.invoke_action_on")
+    @McpDescription(
+        """
+        |Invokes an IntelliJ AnAction with a synthetic AnActionEvent whose DataContext is
+        |rooted at a previously-located Swing component. Equivalent to a real user clicking
+        |that widget and triggering the named action — but addressable from an MCP agent.
+        |
+        |OPT-IN and SECURITY-SENSITIVE. This is a privileged WRITE operation. Actions can
+        |delete files, run code, push to git, install plugins, refactor, etc. This tool is
+        |off by default and, when enabled, shows a modal confirmation dialog on every call
+        |(opt-out only for the rest of the session, never persisted).
+        |
+        |Use this when: you've already located the right Swing component via ui.find_by_*
+        |or ui.get_tree and you need to invoke an action whose data context depends on that
+        |component (a context-menu action on a tree node, a toolbar button bound to a
+        |specific panel, an editor action on a specific editor instance).
+        |
+        |Do NOT use this when:
+        |  - You want to invoke an action against whatever currently holds focus — use the
+        |    JetBrains built-in `execute_action_by_id` MCP tool, it's lighter-weight.
+        |  - You only need to read UI state (use ui.get_tree / ui.get_properties).
+        |  - The action you want is destructive (delete, reset, force-push, hard refactor)
+        |    AND you don't actually need the data context binding — issue the operation
+        |    via the dedicated MCP tool (VCS / refactor MCPs) which carries its own
+        |    confirmation UX instead of trusting our generic blocklist.
+        |  - The user hasn't enabled this tool: it's off by default in
+        |    Settings → Tools → IDE Introspector → "Allow UI action invocation".
+        |
+        |SAFETY MODEL (identical to exec.execute_kotlin_in_ide):
+        |  1. Off by default. Enable in Settings → Tools → IDE Introspector → "Allow UI
+        |     action invocation".
+        |  2. Per-call modal confirmation by default, showing actionId, action text, owning
+        |     plugin, target component class+id+bounds, and the current project. Opt-out
+        |     button "Allow for this session" — in-memory only, never written to disk.
+        |  3. HARD BLOCKLIST of dangerous action-id patterns (*Force*, *Delete*, *Reset*,
+        |     `Vcs.RefactoringChanges`, `Reset_HEAD`, `Maven.Reimport`, plus user-extendable
+        |     list in settings) triggers a SECOND confirmation dialog even when the session
+        |     bypass is active and even when requireConfirmation=false. There is no way to
+        |     bypass the second confirmation for blocklisted actions.
+        |  4. Every call recorded to idea.log under category "ide-introspector-audit"
+        |     (caller, actionId, componentId, component class, outcome, durationMs).
+        |  5. Hard 10 s execution timeout via onEdtBlocking(10_000). The IDE is not allowed
+        |     to hang for longer; the action either completes or the call returns
+        |     ok=false, error="timeout". Note: the action's side effects may continue to
+        |     run on the EDT after our timeout — this tool measures and reports, it does
+        |     not actually abort an in-flight action.
+        |
+        |Returns: { ok:bool, actionId:string, executed:bool, presentationText:string?,
+        |durationMs:long, error:string? }. `executed=true` ONLY when the action's
+        |actionPerformed() was actually invoked; `executed=false` means update() reported
+        |enabled=false (e.g. wrong context, dumb mode, no project) and we did not fire.
+        |`ok=false` reflects either user rejection, blocklist double-prompt rejection,
+        |unknown actionId, dead componentId, timeout, or thrown exception during update/
+        |perform.
+        |
+        |Examples:
+        |  actionId="Build", componentId="c_a3f2e1b8"
+        |    — invokes Build against a toolbar button context
+        |  actionId="QuickJavaDoc", componentId="c_91cd2204"
+        |    — context action on a tree row in the Project view
+        |  actionId="EditorChooseLookupItem", componentId="c_55ee0011"
+        |    — completion popup action targeted at one specific editor
+        """
+    )
+    suspend fun `ui_invoke_action_on`(
+        @McpDescription("Action id registered with ActionManager (e.g. 'Build', 'QuickJavaDoc'). Non-blank.")
+        actionId: String,
+        @McpDescription("Component id from a prior ui.find_by_* / ui.get_tree call in the same IDE session. Format 'c_xxxxxxxx'.")
+        componentId: String,
+        @McpDescription("Optional cosmetic override for Presentation.text on the synthetic event — audit + dialog only. Truncated to 200 chars.")
+        presentationText: String? = null,
+        @McpDescription("Force a confirmation prompt even if the session bypass is active. Blocklisted ids ALWAYS double-confirm regardless of this flag.")
+        requireConfirmation: Boolean = true,
+    ): InvokeActionResponse {
+        val settings = UiActionSettings.getInstance()
+        if (!settings.enabled) {
+            throw McpExpectedError(
+                "ui.invoke_action_on is disabled. Enable in Settings → Tools → IDE Introspector → 'Allow UI action invocation'.",
+                JsonObject(emptyMap()),
+            )
+        }
+        if (actionId.isBlank()) {
+            throw McpExpectedError("actionId must not be blank", JsonObject(emptyMap()))
+        }
+
+        // 1. Resolve action (off-EDT; getAction is thread-safe).
+        val action = UiActionInvoker.findAction(actionId)
+        if (action == null) {
+            val error = UiActionInvoker.formatActionNotFound(actionId)
+            AuditLogger.recordUiAction(actionId, componentId, null, "action-not-found", 0, error)
+            return InvokeActionResponse(
+                ok = false,
+                actionId = actionId,
+                executed = false,
+                durationMs = 0,
+                error = error,
+            )
+        }
+
+        // 2. Resolve component (off-EDT; ComponentRegistry is synchronized).
+        val component = ComponentRegistry.getInstance().lookup(componentId)
+        if (component == null) {
+            val error = UiActionInvoker.formatComponentDetached(componentId)
+            AuditLogger.recordUiAction(actionId, componentId, null, "component-detached", 0, error)
+            throw McpExpectedError(
+                "Component '$componentId' is no longer attached (panel closed or IDE restarted). " +
+                    "Call ui.find_by_* or ui.get_tree again to get a fresh id.",
+                JsonObject(emptyMap()),
+            )
+        }
+        val componentClass = component.javaClass.name
+
+        // 3. Blocklist check (off-EDT).
+        val isBlocklisted = UiActionBlocklist.matches(actionId, settings.blocklistedActionIds)
+
+        // 4. Confirmation (two-stage when blocklisted).
+        val project = currentCoroutineContext().projectOrNull
+        val actionText = runCatching { action.templatePresentation.text }.getOrNull()
+        val pluginOwner = lookupPluginOwner(action)
+        val decision = UiActionConfirmationManager.confirm(
+            project = project,
+            actionId = actionId,
+            actionText = actionText,
+            pluginOwner = pluginOwner,
+            component = component,
+            componentId = componentId,
+            requireConfirmation = requireConfirmation,
+            isBlocklisted = isBlocklisted,
+        )
+        when (decision) {
+            UiActionConfirmationManager.Decision.Rejected -> {
+                AuditLogger.recordUiAction(actionId, componentId, componentClass, "user-rejected", 0, null)
+                return InvokeActionResponse(
+                    ok = false, actionId = actionId, executed = false,
+                    presentationText = UiActionInvoker.truncatePresentationText(presentationText) ?: actionText,
+                    durationMs = 0, error = "user-rejected",
+                )
+            }
+            UiActionConfirmationManager.Decision.RejectedBlocklist -> {
+                AuditLogger.recordUiAction(actionId, componentId, componentClass, "user-rejected-blocklist", 0, null)
+                return InvokeActionResponse(
+                    ok = false, actionId = actionId, executed = false,
+                    presentationText = UiActionInvoker.truncatePresentationText(presentationText) ?: actionText,
+                    durationMs = 0, error = "user-rejected-blocklist",
+                )
+            }
+            UiActionConfirmationManager.Decision.Approved -> { /* fall through */ }
+        }
+
+        // 5. Single EDT trip — DataContext, update, perform.
+        val invokeResult = try {
+            onEdtBlocking(DEFAULT_EDT_TIMEOUT_MS) {
+                UiActionInvoker.invoke(action, component, presentationText)
+            }
+        } catch (t: TimeoutException) {
+            AuditLogger.recordUiAction(actionId, componentId, componentClass, "edt-timeout", DEFAULT_EDT_TIMEOUT_MS, t.message)
+            return InvokeActionResponse(
+                ok = false, actionId = actionId, executed = false,
+                presentationText = UiActionInvoker.truncatePresentationText(presentationText) ?: actionText,
+                durationMs = DEFAULT_EDT_TIMEOUT_MS, error = "edt-timeout",
+            )
+        }
+
+        val outcome = when {
+            !invokeResult.ok -> "error"
+            invokeResult.executed -> "executed"
+            else -> "not-enabled"
+        }
+        AuditLogger.recordUiAction(actionId, componentId, componentClass, outcome, invokeResult.durationMs, invokeResult.error)
+        return InvokeActionResponse(
+            ok = invokeResult.ok,
+            actionId = actionId,
+            executed = invokeResult.executed,
+            presentationText = invokeResult.presentationText,
+            durationMs = invokeResult.durationMs,
+            error = invokeResult.error,
+        )
+    }
+
+    /**
+     * Best-effort plugin attribution for the dialog body. Falls back to `null` when the
+     * platform can't tell us which plugin contributed the action class — most often the
+     * case for IDE-bundled actions.
+     */
+    private fun lookupPluginOwner(action: com.intellij.openapi.actionSystem.AnAction): String? = runCatching {
+        PluginManagerCore.getPluginByClassName(action.javaClass.name)?.idString
+    }.getOrNull()
 
     // -------------------- core implementations --------------------
 

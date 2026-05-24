@@ -43,6 +43,8 @@
             serviceImplementation="com.github.xepozz.ide.introspector.core.PluginInventory"/>
         <applicationService
             serviceImplementation="com.github.xepozz.ide.introspector.exec.ExecSettings"/>
+        <applicationService
+            serviceImplementation="com.github.xepozz.ide.introspector.exec.UiActionSettings"/>
 
         <applicationConfigurable
             instance="com.github.xepozz.ide.introspector.exec.ExecSettingsConfigurable"
