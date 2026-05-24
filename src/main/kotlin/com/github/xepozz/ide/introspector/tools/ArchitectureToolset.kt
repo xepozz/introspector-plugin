@@ -1,10 +1,12 @@
 package com.github.xepozz.ide.introspector.tools
 
 import com.github.xepozz.ide.introspector.core.ListenerInspector
+import com.github.xepozz.ide.introspector.core.ActionInventory
 import com.github.xepozz.ide.introspector.core.PluginInventory
 import com.github.xepozz.ide.introspector.core.RequirementsAnalyzer
 import com.github.xepozz.ide.introspector.model.CheckRequirementsResponse
 import com.github.xepozz.ide.introspector.model.ExtensionInfo
+import com.github.xepozz.ide.introspector.model.ListActionsResponse
 import com.github.xepozz.ide.introspector.model.ListExtensionPointsResponse
 import com.github.xepozz.ide.introspector.model.ListExtensionsResponse
 import com.github.xepozz.ide.introspector.model.ListListenersResponse
@@ -571,6 +573,60 @@ class ArchitectureToolset : McpToolset {
             .filter { providedByPluginId == null || it.providedByPluginId == providedByPluginId }
             .filter { topicContains == null || it.topicClass.contains(topicContains, ignoreCase = true) }
         return ListListenersResponse(all.take(clampedLimit), all.size)
+    @McpTool(name = "arch.list_actions")
+    @McpDescription(
+        """
+        |Global action catalog with fuzzy search — the JSON equivalent of Ctrl+Shift+A "Find
+        |Action" across every plugin. Each result carries id, display text, description,
+        |owning plugin id/name, formatted keyboard shortcut(s), the action-group path
+        |(category), the icon path, and an isInternal flag.
+        |
+        |Use this when: you need to discover an action id to call later, find which plugin
+        |owns a feature ("who provides 'Run Anything'?"), audit shortcut bindings, or list
+        |all actions a specific plugin contributes. Pairs with arch.get_plugin_details for
+        |the inverse direction (plugin → its actions).
+        |
+        |Do NOT use this when: you want to *invoke* an action (use ui.invoke_action_on or the
+        |JetBrains built-in execute_action_by_id), or you already have a plugin id and want
+        |that plugin's full inventory (arch.get_plugin_details(includeActions=true)). Do not
+        |use this to enumerate action *groups* — groups are out of scope here, query their
+        |child action ids instead.
+        |
+        |Returns: { actions: ActionInfo[], total: int, truncated: bool }. `total` is the
+        |count BEFORE applying `limit`; `truncated=true` means either the limit was hit OR
+        |the 10 s hard timeout fired and the catalog walk stopped early.
+        |
+        |Performance: vanilla IDEA has ~3000+ registered actions. When `query` looks like a
+        |prefix (alphanumeric, no wildcards), the lookup uses ActionManagerEx.getActionIdList
+        |at the registry level (no AnAction instantiation). Otherwise we stream the full id
+        |list applying filters lazily and stop at `limit`. Results are cached in a TtlCache
+        |keyed on (query, providedByPluginId, includeInternal) for 60 s. Even with these
+        |optimisations, prefer a non-null `query` whenever possible — an unfiltered call
+        |with limit=200 still walks every id.
+        |
+        |Examples:
+        |  query="Refactor"                              — every action whose id or text contains "Refactor"
+        |  query="Editor", providedByPluginId="com.intellij" — platform editor actions only
+        |  providedByPluginId="org.jetbrains.kotlin"      — every Kotlin-plugin action
+        |  query="Run", includeInternal=true, limit=500  — Run* actions, internal included
+        """
+    )
+    suspend fun arch_list_actions(
+        @McpDescription("Case-insensitive substring on action id + display text. When alphanumeric (regex ^[A-Za-z0-9_.]+$) triggers the registry prefix fast-path. Null = no query filter.")
+        query: String? = null,
+        @McpDescription("Exact match on plugin id (e.g. 'com.intellij', 'org.jetbrains.kotlin'). Restricts the candidate set via ActionManagerEx.getPluginActions — the cheapest filter when known.")
+        providedByPluginId: String? = null,
+        @McpDescription("Include actions marked <action internal=\"true\"/> or @ApiStatus.Internal. Default false (end-user noise filter).")
+        includeInternal: Boolean = false,
+        @McpDescription("Cap on returned actions. Coerced into 1..2000. Default 200.")
+        limit: Int = 200,
+    ): ListActionsResponse {
+        return ActionInventory.getInstance().listActions(
+            query = query,
+            providedByPluginId = providedByPluginId,
+            includeInternal = includeInternal,
+            limit = limit,
+        )
     }
 
     private fun actionsFor(pluginId: String): List<String> = runCatching {

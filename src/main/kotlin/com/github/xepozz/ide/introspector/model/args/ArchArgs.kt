@@ -81,4 +81,10 @@ data class ListListenersArgs(
     val providedByPluginId: String? = null,
     val scope: String = "both",              // "application" | "project" | "both"
     val limit: Int = 300,
+@Serializable
+data class ListActionsArgs(
+    val query: String? = null,
+    val providedByPluginId: String? = null,
+    val includeInternal: Boolean = false,
+    val limit: Int = 200,
 )
