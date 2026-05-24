@@ -118,21 +118,15 @@ JetBrains support (see Sources). Also note `HighlightInfo` lives in
 not annotated `@ApiStatus.Internal` individually — the import is
 acceptable as long as you stay on those methods.
 
-### 3. [HIGH] No tests — the plan called for 3 unit tests + 8 platform tests including a daemon-markers fixture
+### 3. [HIGH] No tests — plan called for 3 unit + 8 platform tests including a daemon-markers fixture
 
-`src/test/kotlin/.../core/EditorStateInspectorTest.kt` and
-`src/test/kotlin/.../core/platform/EditorStateInspectorPlatformTest.kt`
-don't exist (`find /home/user/ide-introspector-plugin/src/test -name
-"*Editor*"` returns nothing). The plan (test plan section) listed:
-
-- Unit: `parseSeverity` mapping, line/column clamp helper, inlay-count
-  aggregation. All three are testable without the IDE.
-- Platform: 8 cases (happy path, clamp, file-not-open, get_state after
-  set, get_state with selection, with folding, gutter markers with
-  daemon round-trip, binary rejection).
-
-Bug Finding 1 and Finding 2 would both be caught by case 1 + case 7.
-Bug Finding 5 below would be caught by case 4.
+`EditorStateInspectorTest.kt` and `EditorStateInspectorPlatformTest.kt`
+don't exist. The plan's test plan listed 11 cases (parseSeverity,
+clamp helper, inlay aggregation; platform: happy path, clamp,
+file-not-open, get_state-after-set, with selection, with folding,
+gutter markers with daemon round-trip, binary rejection). Findings 1
+and 2 above would be caught by cases 1 and 7. This alone is
+merge-blocking per `docs/CODE_QUALITY.md`.
 
 ### 4. [MED] `editor.virtualFile` access is nullable — empty `fileUrl=""` slips through both response paths
 
@@ -152,12 +146,13 @@ it's a latent foot-gun. Either:
 - Make the response field nullable (`fileUrl: String?`), or
 - `require(editor.virtualFile != null)` early so we never get here.
 
-### 5. [MED] `selection` reports the *primary* caret's selection only — but the plan said `selection` is "primary caret's selection" and `carets[i].selectionStart/End` covers secondary carets. Implementation matches the plan, BUT the docstring on `EditorState.selection` says "Primary caret's selection" while the description on the tool says "current selection" (singular, no clarification). Caller with multi-caret + secondary-only selection sees `selection=null` and might assume no selection exists at all.
+### 5. [MED] `editor.get_state` `@McpDescription` says "current selection" without saying "primary caret only"
 
-`EditorToolset.kt:107-117` — the `editor.get_state` `@McpDescription`
-mentions "current selection" without saying "primary only". Multi-caret
-selections show up only in `carets[i]`. Doc bug, not a code bug;
-amend the `@McpDescription` to say "primary caret's selection — see
+`EditorToolset.kt:107-117` — implementation matches the plan
+(`selection` is primary; `carets[i].selectionStart/End` covers
+secondaries) but the description is ambiguous. Caller with multi-caret
++ secondary-only selection sees `selection=null` and may conclude
+nothing is selected. Amend to "primary caret's selection — see
 `carets[i].selectionStart/End` for secondary-caret selections".
 
 ### 6. [MED] `selectionInfo` `length = end - start` lies for column-mode block selection
@@ -226,60 +221,34 @@ hides the unchecked-throwable swallow behind a generic cast. Replace
 with `ReadAction.compute<T, RuntimeException> { block() }` (which is
 what the rest of the plan implied) or the existing `runReadAction<T, Throwable>`.
 
-### 11. [LOW] `editor.virtualFile` is on `Editor` since 2022.2 — minor API target check
+### 11. [OK] `setCaretAtOffset` and secondary carets
 
-The plugin targets recent IntelliJ; the property is available. Just a
-note in case anyone backports — the older path was
-`FileDocumentManager.getInstance().getFile(editor.document)`.
+`EditorStateInspector.kt:99` uses `caretModel.moveToOffset` — primary
+moves, secondaries untouched (matches plan). Verified against
+`CaretModelImpl`. Flagged so the checklist item gets a real answer.
 
-### 12. [LOW] `setCaretAtOffset` doesn't preserve secondary carets — silently collapses multi-caret mode
+### 12. [LOW] `set_caret` `@McpDescription` doesn't say `scrollToCaret` may not be on-screen by response time
 
-`EditorStateInspector.kt:99`:
-```kotlin
-editor.caretModel.moveToOffset(newOffset)
-```
+`EditorInfo.kt:13-14` notes this on `madeVisible`; the tool description
+("Scroll the editor so the caret is visible") implies sync. Add a
+short caveat.
 
-`CaretModel.moveToOffset` operates on the primary caret only; secondary
-carets are preserved (matching the plan's "Multi-caret
-preservation/clear semantics" item — the plan said "primary moves,
-secondaries untouched"). Verified by reading `CaretModelImpl`. So the
-implementation is correct here. **Item is OK** — flagged so the
-checklist gets a real answer rather than "didn't look".
+### 13. [LOW] `clampedColumn = > lineEnd` is off-by-one at the EOL boundary
 
-### 13. [LOW] `editor.set_caret` `@McpDescription` says `scrollToVisible` uses `ScrollType.MAKE_VISIBLE` — true, but doesn't mention the call is async (viewport may not actually be on-screen when the response returns)
+`EditorStateInspector.kt:137` — `column = lineLength + 1` (post-EOL)
+gives `clamped=false`. Either fix to `>=` or document the boundary.
 
-`EditorInfo.kt:13-14` does note this on `madeVisible`, but the
-`@McpDescription` itself ("Scroll the editor so the caret is visible")
-implies sync. `scrollingModel.scrollToCaret` is typically synchronous
-(no animation when called from EDT outside the smooth-scroll path)
-but doesn't *guarantee* it. Cheap doc clarification.
+### 14. [LOW] `EditorState.gutterMarkers` field is `List? = null` but the docstring says "always non-null on success"
 
-### 14. [LOW] `setCaretAtLineColumn` `clampedColumn` uses `> lineEnd` not `>= lineEnd`
+`EditorInfo.kt:50` — make it `List<GutterMarkerInfo> = emptyList()` to
+match the invariant.
 
-`EditorStateInspector.kt:137` — `clampedColumn = lineStart + targetCol > lineEnd`.
-Request `column = lineLength + 1` (one past the last character): `lineStart + targetCol == lineEnd`, so `clampedColumn=false`. But the caret in fact moves to the character *at* lineEnd (the newline / EOL boundary), which is the line end — many users would expect `clamped=true` here. Off-by-one ambiguity; either fix to `>=` or document that "column may equal line-length+1 (post-EOL boundary) without `clamped` being set".
+### 15. [LOW] Five sentinel exception classes for `resolveEditor` + duplicated catch arms
 
-### 15. [LOW] `EditorState.gutterMarkers` doc says "Always non-null on success" but the field is `List<GutterMarkerInfo>? = null`
-
-`EditorInfo.kt:50` — the field is nullable in the model but always
-populated. Make it `List<GutterMarkerInfo> = emptyList()` (non-null
-default) to align with the docstring's invariant, OR document when it
-*can* be null (currently: never).
-
-### 16. [LOW] Five distinct sentinel exception classes for `resolveEditor` — could be one sealed class with a `type` field
-
-`EditorStateInspector.kt:37-46` — `FileNotOpenException`,
-`NotATextEditorException`, `NoActiveEditorException`,
-`FileNotFoundException`. Caller (`EditorToolset.kt:86-96`,
-duplicated for `:162-172`) catches all four with identical handling.
-Sealed class + `when` would let the toolset write one `catch (e:
-ResolutionError)` and the duplicated try/catch block would collapse.
-
-### 17. [LOW] `requireProject()` raises an `McpExpectedError` with `JsonObject(emptyMap())` — pattern repeated across the four catch arms; helper would clean it up
-
-`EditorToolset.kt:86-96` and `:162-172` — every catch arm is the same
-shape: `throw McpExpectedError(e.message ?: "<fallback>", JsonObject(emptyMap()))`.
-Extract a `private fun expected(message: String): Nothing = throw McpExpectedError(message, JsonObject(emptyMap()))`.
+`EditorStateInspector.kt:37-46` + `EditorToolset.kt:86-96, 162-172` —
+collapse to a sealed class and a `private fun expected(message:
+String): Nothing = throw McpExpectedError(message, JsonObject(emptyMap()))`
+helper.
 
 ## Threading & EDT model — mostly OK, one nitpick
 
@@ -322,17 +291,9 @@ leak into the wire format. Severity is serialized as a `String` (the
 `.name`), not the `HighlightSeverity` object. Clean.
 
 ## Test coverage — absent
-
-No unit tests, no platform tests. The plan's test plan listed 11
-specific cases; zero of them exist. This alone is merge-blocking by
-the project's testing criteria (`docs/CODE_QUALITY.md`).
-
-The three unit-testable helpers — `parseSeverity`, line/column clamp,
-inlay-count aggregation — don't need the IDE runtime and could land
-this week. The 8 platform tests need `BasePlatformTestCase` (pattern
-used by the existing `PsiStructureWalkerPlatformTest`) and a fixture
-file under `src/test/testData/editor/`. Estimated effort matches the
-plan's ~2 h figure.
+See Finding 3. Unit helpers (`parseSeverity`, clamp, inlay
+aggregation) don't need the IDE; platform tests follow the
+`PsiStructureWalkerPlatformTest` `BasePlatformTestCase` pattern.
 
 ## Recommended actions before merge
 
@@ -362,13 +323,13 @@ plan's ~2 h figure.
 - `core/EditorStateInspector.kt:239-254` — all vs collapsed folds (Finding 8)
 - `core/EditorStateInspector.kt:158,279` — `parseSeverity` twice (Finding 9)
 - `core/EditorStateInspector.kt:353-362` — local `runRead` (Finding 10)
-- `core/EditorStateInspector.kt:99` — `moveToOffset` preserves secondaries (Finding 12, OK)
-- `core/EditorStateInspector.kt:137` — `> lineEnd` boundary (Finding 14)
+- `core/EditorStateInspector.kt:99` — `moveToOffset` preserves secondaries (Finding 11, OK)
+- `core/EditorStateInspector.kt:137` — `> lineEnd` boundary (Finding 13)
 - `tools/EditorToolset.kt:107-117` — `@McpDescription` "current selection" (Finding 5)
 - `tools/EditorToolset.kt:128` — `@McpDescription` "collapsed" (Finding 8)
-- `tools/EditorToolset.kt:71` — `scrollToVisible` async note (Finding 13)
-- `tools/EditorToolset.kt:86-96, 162-172` — duplicate catch arms (Finding 17)
-- `model/EditorInfo.kt:50` — nullable vs always-populated (Finding 15)
+- `tools/EditorToolset.kt:71` — `scrollToVisible` async note (Finding 12)
+- `tools/EditorToolset.kt:86-96, 162-172` — duplicate catch arms (Finding 15)
+- `model/EditorInfo.kt:50` — nullable vs always-populated (Finding 14)
 - `META-INF/mcp-integration.xml:11` — registration (OK)
 - `src/test/.../EditorStateInspector*` — missing (Finding 3)
 
