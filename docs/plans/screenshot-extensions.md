@@ -187,38 +187,35 @@ worst case. No caching — per-call data.
 
 1. **componentId not in registry** — `McpExpectedError("Component '$id' is no
    longer attached")` (matches `capture target=component`).
-2. **Component not displayable** when `target ∈ {active_frame, screen}` —
-   `getLocationOnScreen()` throws; catch and throw `McpExpectedError(
-   "Component is not currently visible — cannot compute frame/screen coords")`.
-   For `target=component`, `paint()` works on detached components.
-3. **Bounds extend past frame** (offscreen popup, detached toolwindow) — clip
-   to image bounds and warn `"component clipped to frame bounds"`; draw what's
-   visible.
-4. **Zero-area bounds** — draw small marker at the origin + warn
-   `"component has zero-size bounds; drew a marker"`.
-5. **`target="all_frames"`** — explicit reject; hint `active_frame` or `screen`.
-6. **Color parse failure / label too long / newlines** — fall back to red and
-   warn; UTF-8 truncate label to 80 chars (existing helper), collapse `\n`/`\r`
-   to spaces, draw single line. If label clips top edge, place inside-top.
+2. **Not displayable** when `target ∈ {active_frame, screen}` —
+   `getLocationOnScreen()` throws; catch → `McpExpectedError("Component is not
+   currently visible — cannot compute frame/screen coords")`. `target=component`
+   works on detached components via `paint()`.
+3. **Bounds past frame** (offscreen popup, detached toolwindow) — clip to image
+   bounds + warn `"component clipped to frame bounds"`; draw what's visible.
+4. **Zero-area bounds** — draw small marker at origin + warn.
+5. **`target="all_frames"`** — explicit reject; hint `active_frame` / `screen`.
+6. **Color parse fail / label too long / newlines** — fall back to red + warn;
+   UTF-8 truncate to 80 chars (existing helper), collapse `\n`/`\r` to spaces;
+   place label inside-top of box if clipping the top edge.
 
 `diff`:
 
-7. **Base64 decode or `ImageIO.read` fails** — `McpExpectedError("'<which>' is
-   not a valid PNG")`.
-8. **Mismatched dimensions** — policy-driven (`resize` default, `pad`,
-   `error`). `resize` covers the dominant HiDPI / window-resize case; `pad` is
-   faithful but inflates `differingPixels`; `error` is strict.
-9. **AA text jitter** — default `tolerance=8` documented to mask JBR HiDPI
-   subpixel jitter; validated in platform smoke (bump to 12 if needed — open Q).
-10. **Alpha channel** — diffed per-channel: translucent→opaque counts as
-    different even when RGB matches.
+7. **Base64 / `ImageIO.read` fail** — `McpExpectedError("'<which>' is not a
+   valid PNG")`.
+8. **Mismatched dimensions** — policy-driven: `resize` (default, HiDPI / window-
+   resize case), `pad` (faithful but inflates diff), `error` (strict).
+9. **AA text jitter** — `tolerance=8` default masks JBR HiDPI subpixel noise;
+   validate in platform smoke (bump to 12 — see open Qs).
+10. **Alpha channel diffed per-channel** — translucent→opaque counts even when
+    RGB matches.
 11. **Identical inputs** — `differingPixels=0`, `bbox=null`,
     `diffPercentage=0.0`; output is still a valid grayscale-of-after PNG.
 12. **Output exceeds MCP budget** — same `fitWithinBudget` downscale; bbox is
-    reported in the **returned (scaled)** image's coordinates, with a warning
-    `"output downscaled by N halving passes; bbox is in scaled coordinates"`.
-13. **Non-ARGB decoded type** (e.g. `TYPE_BYTE_INDEXED`) — convert to
-    `TYPE_INT_ARGB` once, then diff via the int-array fast path.
+    reported in the **returned (scaled)** image's coordinates + warn `"output
+    downscaled by N halving passes; bbox is in scaled coordinates"`.
+13. **Non-ARGB decoded type** (e.g. `TYPE_BYTE_INDEXED`) — convert once to
+    `TYPE_INT_ARGB`, then diff via int-array fast path.
 
 ## Files to create/modify
 

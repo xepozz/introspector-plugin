@@ -203,47 +203,44 @@ change on every edit, invalidation isn't worth it.
 
 Hard 10 s cap per CLAUDE.md. Mitigations:
 
-1. `includeLibraries=false` default on package variant — without this, `java.util`
+1. `includeLibraries=false` default on package variant — without it, `java.util`
    recursive enumerates ~30k JDK classes.
-2. `limit` clamped to `[1, 5000]` via `require(limit in 1..5000)`. When hit set
-   `truncated=true`.
-3. Wall-clock deadline (`System.nanoTime() + 10_000_000_000L`, reusing
-   `EdtHelpers.DEFAULT_EDT_TIMEOUT_MS`) checked between files/packages; bail with
-   `timedOut=true` + partial results.
-4. VFS `iterateContent` for the module variant is O(files) and avoids materializing
-   PSI for files we'll filter out.
-5. Per-file/per-package `runCatching { … }.getOrElse { … }` so one corrupt entry
-   doesn't tank the call (mirrors `ExtensionPointInspector.collectFromArea`).
+2. `limit` clamped to `[1, 5000]` via `require`; when hit, `truncated=true`.
+3. Wall-clock deadline (`EdtHelpers.DEFAULT_EDT_TIMEOUT_MS`) checked between
+   files/packages; bail with `timedOut=true` + partial results.
+4. VFS `iterateContent` for the module variant is O(files); skips materializing
+   PSI for filtered-out files.
+5. Per-file `runCatching { … }.getOrElse { … }` so one corrupt entry doesn't tank
+   the call (mirrors `ExtensionPointInspector.collectFromArea`).
 
 If a realistic worst case still exceeds 10 s, **narrow the tool** (require
-`packagePrefix`, lower limits) rather than raising the cap.
+`packagePrefix`, lower defaults) rather than raising the cap.
 
 ## Edge cases
 
-1. **Module not found** — throw `McpExpectedError("Module not found: <name>. Use
+1. **Module not found** → `McpExpectedError("Module not found: <name>. Use
    get_project_modules to list available modules.", …)`.
-2. **Empty / missing package** — return `ListClassesResponse(scope, [], 0, false)`.
-   Not an error. Matches `arch.list_services` convention.
-3. **Mixed Java + Kotlin module** — `PsiClassOwner.classes` returns Java classes
-   plus light-class wrappers for Kotlin; no per-language branching needed.
+2. **Empty / missing package** → `ListClassesResponse(scope, [], 0, false)`. Not an
+   error (matches `arch.list_services` convention).
+3. **Mixed Java + Kotlin module** — `PsiClassOwner.classes` returns Java + Kotlin
+   light classes uniformly; no per-language branching.
 4. **Kotlin file facades** — top-level functions/properties synthesize a `FooKt`
-   class via `KtLightClassForFacade`. Map to `kind="kotlinFileFacade"` so agents
-   can distinguish from a hand-written `class FooKt`. Skip entirely when
+   class via `KtLightClassForFacade`; map to `kind="kotlinFileFacade"` so an agent
+   can distinguish from a hand-written `class FooKt`. Skipped entirely when
    `"kotlinFileFacade"` is not in `kinds`.
 5. **Default/root package** — `packageFqn=""` is valid and documented.
 6. **Anonymous + inner classes** — excluded in v1 (top-level only via
-   `PsiClassOwner.classes`). Inner-class support deferred (see Open Qs).
-7. **Generated sources** — controlled by `includeGenerated` on the module variant.
-   The package variant has no such knob (its scope is package-shaped, not directory-
-   shaped); documented as an explicit asymmetry.
-8. **PsiClass without qualifiedName** — local/synthetic classes; skip silently.
-9. **Dumb mode** — `JavaPsiFacade.findPackage` returns possibly-stale results;
-   when `DumbService.isDumb(project)` set `note="Project is indexing; results may
-   be incomplete"`.
-10. **Module with no source roots** — empty `classes`, `total=0`. Not an error.
-11. **Library scope** — `includeLibraries=true` uses
-    `GlobalSearchScope.allScope(project)`; `false` uses `projectScope`. Never
-    `everythingScope` (covers non-Java VFS too).
+   `PsiClassOwner.classes`). Inner-class support deferred (Open Qs).
+7. **Generated sources** — `includeGenerated` controls module variant; package
+   variant has no equivalent (scope is package-shaped, not directory-shaped) —
+   explicit asymmetry documented.
+8. **PsiClass without `qualifiedName`** — local/synthetic; skipped silently.
+9. **Dumb mode** — `JavaPsiFacade.findPackage` may return stale results; when
+   `DumbService.isDumb(project)` set `note="Project is indexing; results may be
+   incomplete"`.
+10. **Module with no source roots** → empty list, `total=0`. Not an error.
+11. **Library scope** — `true` → `GlobalSearchScope.allScope`; `false` →
+    `projectScope`. Never `everythingScope` (includes non-Java VFS).
 
 ## Files to create/modify
 
@@ -301,24 +298,21 @@ Toolset wrappers are thin enough not to need their own test class.
 
 ## Open questions / risks
 
-1. **Inner classes** — v1 excludes (top-level only). Adding
-   `includeInnerClasses: Boolean = false` via `PsiClass.innerClasses` is cheap but
-   inflates responses and complicates `fqn` (uses `$`). Defer to v2 under demand.
-2. **Per-class size** (`byteLength`) — recommend **yes in v1**; we already touch the
-   file, the cost is one `PsiFile.textLength` read, and it lets agents prioritize
-   big classes when budgeting `code.get_source` follow-ups. Line count is
-   redundant given byte length.
-3. **Kotlin object / companion-object** — currently surface as `kind="class"` via
-   light-class wrapping. Separate `kotlinObject` / `kotlinCompanion` kinds would
-   need Kotlin-plugin-only reflection. **Defer**, note in description.
-4. **`fileUrl` per class** — recommend **yes in v1**, included. Makes
-   `code.get_source` follow-ups one round-trip cheaper and lets agents jump
-   straight to a file without an intermediate `code.find_class`.
-5. **Deadline injection** for `timedOut` testing without `Thread.sleep` flakiness
-   needs a `Clock`/`Deadline` seam — small refactor, budgeted above.
-6. **Library scope edge cost** — `includeLibraries=true` without a tight package
-   can hit the 10 s cap. `truncated=true` + `timedOut=true` is a correct outcome,
-   but the description warns loudly so the agent doesn't naively retry.
+1. **Inner classes** — v1 excludes. Adding `includeInnerClasses: Boolean = false`
+   via `PsiClass.innerClasses` is cheap but inflates responses and complicates `fqn`
+   (uses `$`). Defer to v2 under demand.
+2. **Per-class `byteLength`** — recommend **yes in v1** (included): we already touch
+   the file, one `PsiFile.textLength` read, lets agents prioritize big classes when
+   budgeting `code.get_source`. Line count would be redundant.
+3. **Kotlin object / companion** — currently surface as `kind="class"` via light-class
+   wrapping. Separate `kotlinObject` / `kotlinCompanion` would need Kotlin-plugin-only
+   reflection. Defer; note in description.
+4. **`fileUrl` per class** — recommend **yes in v1**, included. Saves a round trip
+   to `code.find_class` for follow-ups.
+5. **Deadline injection** for `timedOut` testing needs a `Clock`/`Deadline` seam to
+   avoid `Thread.sleep` flakiness; small refactor, budgeted above.
+6. **Library scope cost** — `includeLibraries=true` without a tight package can hit
+   the 10 s cap; `truncated=true` + `timedOut=true` is correct; description warns.
 7. **PyCharm CE / GoLand** — `java-introspect.xml` already gates on
    `com.intellij.modules.java`; no extra wiring needed.
 

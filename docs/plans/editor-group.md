@@ -47,14 +47,14 @@ and visible gutter markers — without a screenshot round-trip.
     |(both 1-based). If both supplied, `offset` wins. Out-of-range positions are
     |clamped to file end and `clamped=true` is set in the response.
     |
-    |Split view: targets the editor returned by `FileEditorManager.selectedEditor`
-    |for that file — the most recently focused split. Per-split targeting is v2.
+    |Split view: targets `FileEditorManager.selectedEditor` for that file — the
+    |most recently focused split. Per-split targeting is v2.
     |
     |Returns: { ok, fileUrl, oldOffset, newOffset, line, column, madeVisible, clamped }.
     |Save `oldOffset` to undo with a second `editor.set_caret` call.
     |
     |Examples:
-    |  fileUrl=null, line=42, column=8        — move caret in active tab to (42,8)
+    |  fileUrl=null, line=42, column=8        — active tab, row 42 col 8
     |  fileUrl="file:///…/Foo.kt", offset=1024 — explicit file + byte offset
     |  line=42, scrollToVisible=false         — move but don't scroll
     """
@@ -180,13 +180,13 @@ signatures; both `@Serializable`.
 - `com.intellij.openapi.editor.Editor` — `caretModel.{primaryCaret, allCarets,
   moveToLogicalPosition, moveToOffset, offset}`, `selectionModel.*`,
   `scrollingModel.{scrollToCaret(ScrollType.MAKE_VISIBLE), visibleAreaOnScrollingFinished}`,
-  `foldingModel.allFoldRegions`, `inlayModel.{getInlineElementsInRange,
-  getBlockElementsInRange, getAfterLineEndElementsInRange}`.
+  `foldingModel.allFoldRegions`, `inlayModel.get{Inline,Block,AfterLineEnd}ElementsInRange`.
 - `com.intellij.openapi.editor.LogicalPosition` for line+column → offset.
 - `com.intellij.codeInsight.daemon.impl.DaemonCodeAnalyzerImpl.getHighlights(
   Document, HighlightSeverity, Project)` — `@ApiStatus.Internal`; same path the
-  bundled Problems view uses. Fallback: `MarkupModelEx.processRangeHighlightersOverlappingWith`
-  filtered by daemon-owned tooltip renderer.
+  bundled Problems view uses. Fallback:
+  `MarkupModelEx.processRangeHighlightersOverlappingWith` filtered by daemon-owned
+  tooltip renderer.
 - `com.intellij.lang.annotation.HighlightSeverity`.
 
 ## Threading & EDT model
@@ -233,15 +233,9 @@ themselves) and leaving `includeInlays` off by default.
 
 ## META-INF wiring
 
-`editor.*` works in **any** IDE — no Java module or Kotlin plugin dependency.
-Register in the existing `mcp-integration.xml` alongside the other always-on
-toolsets. No new shim XML.
-
-Add one line to `src/main/resources/META-INF/mcp-integration.xml`:
-
-```xml
-<mcpServer.mcpToolset implementation="com.github.xepozz.ide.introspector.tools.EditorToolset"/>
-```
+`editor.*` works in **any** IDE (no Java module / Kotlin plugin dependency). Add one
+`<mcpServer.mcpToolset>` line to `src/main/resources/META-INF/mcp-integration.xml`
+alongside the other always-on toolsets. No new shim XML.
 
 ## Files to create/modify
 
@@ -283,12 +277,10 @@ Add one line to `src/main/resources/META-INF/mcp-integration.xml`:
 
 ## Estimated effort
 
-~1 day combined.
-- Models + args: ~1 h.
-- `EditorStateInspector` (caret math, fold/inlay collection, daemon read): ~3 h.
-- `EditorToolset` wrappers + EDT bouncing + arg validation: ~1.5 h.
-- META-INF wiring + smoke test in `runIde`: ~30 min.
-- Unit tests: ~1 h. Platform tests (daemon timing is fiddly): ~2 h.
+~1 day combined: models + args ~1 h; `EditorStateInspector` (caret math, fold/inlay,
+daemon read) ~3 h; `EditorToolset` wrappers + EDT bouncing + arg validation ~1.5 h;
+META-INF wiring + `runIde` smoke ~30 min; unit tests ~1 h; platform tests (daemon
+timing is fiddly) ~2 h.
 
 ## Open questions / risks
 

@@ -252,28 +252,20 @@ paging — not a higher timeout.
 
 ## Edge cases
 
-1. **`target` FQN does not resolve** → `McpExpectedError("No class found for FQN: …")`.
-2. **Position not on a class or method** → `McpExpectedError("Caret is not on a class/method declaration or reference")`.
-3. **Target is `final` class** — empty subtypes, single-node tree, no warning.
-4. **Target is `java.lang.Object`** — subtype walk rejected with warning;
-   supertype walk returns the trivial root.
-5. **Anonymous / local classes** — recognised at a position (`fqn=null`),
-   excluded from subtype-walk results.
-6. **Kotlin objects (singletons)** — `KtLightClass` final, no subtypes — handled
-   like any other final class.
-7. **Sealed class / sealed interface** — detected via Kotlin `SEALED_KEYWORD`
-   on `KtClass` (simple-name probe) OR `PsiClass.hasModifierProperty("sealed")`.
-   Set `isSealed=true` + warning ("sealed type — direct children are
-   exhaustive"). Children still come from `ClassInheritorsSearch`.
-8. **Method on a generic interface** — overrides surface with overrider's
-   erasure signature; we do NOT unify generics across interface/impl.
+1. **FQN does not resolve** → `McpExpectedError("No class found for FQN: …")`.
+2. **Position not on a class/method** → `McpExpectedError("Caret is not on a class/method")`.
+3. **`final` class target** — empty subtypes, single-node tree, no warning.
+4. **`java.lang.Object` target** — subtype walk rejected with warning; supertype walk trivial.
+5. **Anonymous / local classes** — recognised at position (`fqn=null`); excluded from subtype results.
+6. **Kotlin objects (singletons)** — `KtLightClass` final → handled like any final class.
+7. **Sealed class / sealed interface** — detected via `SEALED_KEYWORD` on `KtClass` (simple-name probe)
+   OR `PsiClass.hasModifierProperty("sealed")`. Set `isSealed=true` + warning ("sealed — children exhaustive").
+   Children still come from `ClassInheritorsSearch`; no special walk.
+8. **Method on generic interface** — overrides surface with overrider's erasure signature; no cross-boundary unification.
 9. **Final method** — empty overrides, not an error.
-10. **Project in dumb mode** — `computeWithAlternativeResolveEnabled` handles
-    most; surviving `IndexNotReadyException` caught and surfaced as warning.
-11. **Multi-resolve under caret** — follow first non-null target (matches
-    `PsiUsageSearcher.resolveTarget`); append warning with skipped count.
-12. **Library-only target** — `target.fileUrl` is `jar://…`; `scope="project"`
-    finds only project subclasses.
+10. **Dumb mode** — `computeWithAlternativeResolveEnabled` covers most; surviving `IndexNotReadyException` → warning.
+11. **Multi-resolve under caret** — follow first non-null target (matches `PsiUsageSearcher.resolveTarget`); warn with skipped count.
+12. **Library-only target** — `target.fileUrl` is `jar://…`; `scope="project"` finds project subclasses only.
 
 ## Files to create/modify
 
@@ -294,46 +286,31 @@ shows real breakage, split to a new `PsiHierarchyToolset` under
 
 ## Test plan
 
-**Unit** — pure JVM:
-- accepts `direction`/`scope` only in valid sets; rejects others.
-- validates `maxDepth` / `maxNodes` / `maxResults` bounds.
-- truncation flags on supertype + subtype caps.
-- `Object` FQN target → subtype rejected + warning.
-- position requires `offset` OR `(line,column)`; neither → error.
-- `target` FQN takes precedence over position args.
-- signature normaliser produces `"R name(P p)"`.
+**Unit** — pure JVM: arg validation (`direction`/`scope`/bounds), truncation
+flags on supertype + subtype caps, `Object` FQN → subtype rejected + warning,
+position requires offset OR (line+column), FQN beats position when both, signature
+normaliser produces `"R name(P p)"`.
 
 **Platform** — `BasePlatformTestCase`, fixtures under `src/test/testData/psi/hierarchy/`:
-`Animal.java` (abstract) ← `Dog.java`, `Cat.java` ← `Puppy.java`;
-`Greeter.java` (interface) ← `EnglishGreeter`, `FrenchGreeter`;
-`SealedShape.kt` (sealed) ← `Circle`, `Square`; `KtAnimal.kt` (Kotlin mirror).
+`Animal.java` (abstract) ← `Dog`, `Cat` ← `Puppy`; `Greeter.java` (interface) ←
+`EnglishGreeter`, `FrenchGreeter`; `SealedShape.kt` (sealed) ← `Circle`,
+`Square`; `KtAnimal.kt` (Kotlin mirror). Tests:
 
-- `typeHierarchyByFqn_Animal_returnsExtenders`.
-- `typeHierarchyByPosition_caretOnDog_returnsAnimalSupertype`.
-- `typeHierarchyBothDirections_Dog_returnsParentsAndChildren`.
-- `typeHierarchyMaxDepth1_truncatesDeepChildren` (sets `childrenTruncated`).
-- `typeHierarchyMaxNodes2_truncates` (sets `truncated=true`).
-- `typeHierarchySealedClass_flagsExhaustive` (`isSealed=true` + warning).
-- `typeHierarchyKotlinAbstract_returnsExtenders` (via KtLightClass).
-- `typeHierarchyObject_subtypeRejected`.
-- `typeHierarchyFinalClass_returnsEmptySubtypes`.
-- `gotoImplementationOnInterface_Greeter_returnsTwoImpls` (kind="class").
-- `gotoImplementationOnAbstractMethod_returnsConcreteOverrides` (kind="method").
-- `gotoImplementationOnFinalMethod_returnsEmpty`.
-- `gotoImplementationScopeAll_appendsWarning`.
+- type_hierarchy: byFqn Animal returns extenders; byPosition caret-on-Dog returns
+  Animal supertype; bothDirections Dog returns parents+children; maxDepth=1
+  truncates (sets `childrenTruncated`); maxNodes=2 truncates (sets `truncated`);
+  sealed flags exhaustive; Kotlin abstract works via KtLightClass; Object
+  subtype rejected; final class returns empty subtypes.
+- goto_implementation: on interface Greeter returns two impls (`kind="class"`);
+  on abstract method returns concrete overrides (`kind="method"`); on final
+  method empty; `scope="all"` always appends warning.
 
 ## Estimated effort
 
-| Step | Hours |
-|------|-------|
-| Args + response models | 0.5 |
-| `PsiHierarchyResolver` supertype + subtype walk + caps | 3 |
-| `PsiHierarchyResolver` goto-impl (class + method) + signature norm | 2 |
-| Toolset methods + `@McpDescription` | 1 |
-| Unit tests | 1.5 |
-| Java + Kotlin fixtures + platform tests | 3 |
-| Doc-gen verification + `runIde` smoke (Hierarchy parity) | 1 |
-| **Total** | **~1.5 days (12 h)** |
+Models 0.5h, supertype + subtype walk + caps 3h, goto-impl (class + method) +
+signature norm 2h, toolset methods + `@McpDescription` 1h, unit tests 1.5h,
+Java + Kotlin fixtures + platform tests 3h, doc-gen + `runIde` smoke 1h. Total
+**~1.5 days (12 h)**.
 
 ## Open questions / risks
 
@@ -355,12 +332,9 @@ shows real breakage, split to a new `PsiHierarchyToolset` under
 
 ## References
 
-- Existing: `tools/PsiToolset.kt#psi_find_usages` (positional + scope +
-  truncation pattern); `core/PsiUsageSearcher.kt` (`DefinitionsScopedSearch` +
-  `resolveTarget`); `core/PsiModifiers.kt`.
-- IntelliJ source:
-  - ClassInheritorsSearch: https://github.com/JetBrains/intellij-community/blob/master/platform/lang-impl/src/com/intellij/psi/search/searches/ClassInheritorsSearch.java
-  - OverridingMethodsSearch: https://github.com/JetBrains/intellij-community/blob/master/java/java-indexing-api/src/com/intellij/psi/search/searches/OverridingMethodsSearch.java
-  - DefinitionsScopedSearch: https://github.com/JetBrains/intellij-community/blob/master/platform/indexing-api/src/com/intellij/psi/search/searches/DefinitionsScopedSearch.java
-  - JavaPsiFacade: https://github.com/JetBrains/intellij-community/blob/master/java/java-psi-api/src/com/intellij/psi/JavaPsiFacade.java
-- JetBrains MCP equivalent: **none** for either tool.
+Existing: `tools/PsiToolset.kt#psi_find_usages` (positional + scope + truncation
+pattern); `core/PsiUsageSearcher.kt` (`DefinitionsScopedSearch` + `resolveTarget`);
+`core/PsiModifiers.kt`. IntelliJ source: `ClassInheritorsSearch`,
+`OverridingMethodsSearch`, `DefinitionsScopedSearch`, `JavaPsiFacade` (all under
+`github.com/JetBrains/intellij-community`). JetBrains MCP equivalent: none for
+either tool.

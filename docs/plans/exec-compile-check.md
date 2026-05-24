@@ -2,27 +2,25 @@
 
 ## Purpose & motivation
 
-A "cheap lint" sibling of `exec.execute_kotlin_in_ide`: take a snippet of
-Kotlin, run it through the same kotlin-scripting-jsr223 compiler we already
-host, and return the diagnostics (errors, warnings, info) with line/column
-positions — **without executing anything**. Today an agent that wants to
-validate generated code before pushing it to the user has to either (a) call
-`exec.execute_kotlin_in_ide`, which actually runs the code (with side effects,
-confirmation dialog, opt-in gate) or (b) ask the user to apply-then-fix. The
-JetBrains MCP server has `build_project` (full Gradle/IntelliJ rebuild) but
-NO snippet-level Kotlin compile check — pure gap.
+A "cheap lint" sibling of `exec.execute_kotlin_in_ide`: run a snippet through
+the kotlin-scripting-jsr223 compiler we already host and return all
+diagnostics (errors, warnings, info) with line/column positions — **without
+executing anything**. Today an agent that wants to validate generated code
+before pushing it to the user has to either call `exec.execute_kotlin_in_ide`
+(side effects, modal confirmation, opt-in gate) or punt to apply-then-fix.
+JetBrains' built-in MCP server has `build_project` (full project rebuild) but
+NO snippet-level Kotlin compile — pure gap.
 
-Because nothing runs, this tool is **default-on** and **doesn't need any
-confirmation, AST blacklist, audit log, or `ExecSettings.enabled` gate**. The
-only precondition is that `kotlin-scripting-jsr223` is on the classpath, which
-is already the case in every IDE that loads `META-INF/kotlin-exec.xml`
-(i.e. `org.jetbrains.kotlin` plugin present).
+Because nothing runs, the tool is **default-on**: no `ExecSettings.enabled`
+gate, no `AstSafetyChecker`, no `ConfirmationManager`, no `AuditLogger`. The
+only precondition is `kotlin-scripting-jsr223` on the classpath, already
+guaranteed by `META-INF/kotlin-exec.xml` (the same shim that loads
+`ExecToolset` at all).
 
-**Success criterion:** an agent can call `exec.compile_check { code: "..." }`
-in <1 s on a warm compiler and decide whether to surface the snippet to the
-user or iterate on it — with the SAME wrapping the executor uses, so a
-compile-passing snippet is guaranteed to also compile under
-`exec.execute_kotlin_in_ide`.
+**Success criterion:** agent calls `exec.compile_check` in <1 s warm and
+decides whether to iterate or surface; with `wrap=true` the compile path
+reuses `CodeWrapper.wrap` verbatim, so "compiles here" implies "compiles
+under `exec.execute_kotlin_in_ide`".
 
 ## Tool specification
 
@@ -35,12 +33,12 @@ compile-passing snippet is guaranteed to also compile under
 suspend fun exec_compile_check(
     @McpDescription("Kotlin source to compile. Same shape as exec.execute_kotlin_in_ide.code when wrap=true.")
     code: String,
-    @McpDescription("If true (default), wrap the snippet in the SAME Plugin-class template execute_kotlin_in_ide uses, so 'project', 'pluginDisposable', and the read/write/onEdt helpers resolve. If false, compile the code as a raw top-level .kts script.")
+    @McpDescription("If true (default), wrap in the SAME Plugin-class template execute_kotlin_in_ide uses, so 'project', 'pluginDisposable', and read/write/onEdt helpers resolve. If false, compile as a raw top-level .kts script.")
     wrap: Boolean = true,
 ): CompileCheckResponse
 ```
 
-**`@McpDescription` draft** (verbatim — trim-margin, kept inside `""" | … """`):
+**`@McpDescription` draft** (verbatim, trim-margin):
 
 ```
 |Compiles a Kotlin snippet in-process and returns every compiler diagnostic
@@ -51,7 +49,7 @@ suspend fun exec_compile_check(
 | - You generated a Kotlin snippet and want to verify it compiles BEFORE
 |   asking the user to apply it (or before invoking exec.execute_kotlin_in_ide).
 | - You want a fast syntax / type-check on a snippet without spinning up a
-|   full Gradle build (use JetBrains' `build_project` for whole-project rebuilds).
+|   full Gradle build (use JetBrains' build_project for whole-project rebuilds).
 | - You want to iterate "fix the next compile error" without running anything.
 |
 |Do NOT use this when:
@@ -61,38 +59,32 @@ suspend fun exec_compile_check(
 | - You want lint/style checks beyond the compiler's own diagnostics — this
 |   tool only surfaces what the Kotlin compiler itself reports.
 |
-|Always-on: this tool is NOT gated by the 'Allow Kotlin code execution'
-|setting and does NOT trigger the modal confirmation dialog. Compile is
-|read-only. It does require the org.jetbrains.kotlin plugin (same
-|prerequisite as exec.execute_kotlin_in_ide); on IDEs without it, the tool
-|isn't registered at all.
+|Always-on: NOT gated by the 'Allow Kotlin code execution' setting and does
+|NOT trigger the modal confirmation dialog. Compile is read-only. It does
+|require the org.jetbrains.kotlin plugin (same prerequisite as
+|exec.execute_kotlin_in_ide); on IDEs without it, the tool isn't registered.
 |
 |WRAPPING (wrap=true, default): the snippet is embedded in the same template
-|that exec.execute_kotlin_in_ide uses, so the implicit bindings resolve at
-|compile time:
+|execute_kotlin_in_ide uses, so implicit bindings resolve at compile time:
 | - project: Project?
 | - pluginDisposable: Disposable
 | - read { } / write { } / onEdt { } helpers
 |This guarantees that "compiles here" implies "compiles under exec.execute_*".
-|
-|wrap=false: the input is compiled as a raw top-level .kts script. Use this
-|to lint a self-contained file that already has its own imports / declarations.
+|wrap=false: the input is compiled as a raw top-level .kts script — use this
+|to lint a self-contained file that already has its own imports.
 |
 |Returns: {
-|  ok: Boolean,                          // true iff zero ERROR-severity diagnostics
+|  ok: Boolean,                          // true iff zero ERROR/FATAL diagnostics
 |  diagnostics: [{
 |    severity: "FATAL" | "ERROR" | "WARNING" | "INFO" | "DEBUG",
-|    line: Int?,                         // 1-based; null if compiler had no position
-|    column: Int?,                       // 1-based; null if compiler had no position
+|    line: Int?, column: Int?,           // 1-based; null if no position
 |    file: String?,                      // synthetic name of the wrapped script
 |    message: String,
 |    factoryId: String?                  // e.g. "UNRESOLVED_REFERENCE"; may be null
 |  }],
-|  warnings: [String],                   // tool-side warnings (e.g. "compiler cold-start")
+|  warnings: [String],                   // tool-side warnings (e.g. "timed out")
 |  durationMs: Long
 |}
-|On a snippet with zero errors: ok=true and diagnostics may still be non-empty
-|with WARNING/INFO entries.
 |
 |Examples:
 |  // Verify a generated snippet compiles before running it:
@@ -106,14 +98,12 @@ suspend fun exec_compile_check(
 ```
 
 **Args:**
-- `code: String` — required, the snippet. No size limit imposed by the tool;
-  practical upper bound is whatever the compiler tolerates (~MB range).
-- `wrap: Boolean = true` — when `true`, run the input through `CodeWrapper.wrap`
-  before compiling, so it lints under the same symbol table executions get.
-  When `false`, compile the input as-is.
+- `code: String` — required, the snippet. No tool-side size limit.
+- `wrap: Boolean = true` — if `true`, run input through `CodeWrapper.wrap`
+  before compiling so it lints under the executor's symbol table.
 
-**Response model** (add to `model/args/ExecArgs.kt` companion or a new
-`model/CompileCheckInfo.kt` — see "Files" section):
+**Response model** (new file `model/CompileCheckInfo.kt`; args alongside
+existing `model/args/ExecArgs.kt`):
 
 ```kotlin
 @Serializable data class CompileCheckResponse(
@@ -124,242 +114,194 @@ suspend fun exec_compile_check(
 )
 
 @Serializable data class CompileDiagnostic(
-    val severity: String,        // "FATAL" | "ERROR" | "WARNING" | "INFO" | "DEBUG"
-    val line: Int? = null,       // 1-based
-    val column: Int? = null,     // 1-based
-    val file: String? = null,    // synthetic file name from compiler
+    val severity: String,        // FATAL | ERROR | WARNING | INFO | DEBUG
+    val line: Int? = null,
+    val column: Int? = null,
+    val file: String? = null,
     val message: String,
     val factoryId: String? = null,
 )
 
-@Serializable data class CompileCheckArgs(
-    val code: String,
-    val wrap: Boolean = true,
-)
+@Serializable data class CompileCheckArgs(val code: String, val wrap: Boolean = true)
 ```
 
-## IntelliJ / Kotlin scripting APIs used
+## Kotlin scripting APIs used
 
-Primary path (preferred, rich diagnostics):
+Primary path (rich diagnostics):
+- `kotlin.script.experimental.jvmhost.BasicJvmScriptingHost` — entry point.
+- `host.compiler` (a `JvmScriptCompiler`) — `compile(source, configuration)`
+  (suspend) returns `ResultWithDiagnostics<CompiledScript>`. Pull `.reports`
+  regardless of outcome (`Success` and `Failure` both carry diagnostics).
+- `kotlin.script.experimental.api.ScriptDiagnostic` — fields used:
+  `severity` (FATAL/ERROR/WARNING/INFO/DEBUG enum), `message`, `sourcePath`,
+  `location?.start.line / col`, `code` (factory-id string).
+- `JvmScriptCompilationConfigurationBuilder.jvm { dependenciesFromClassContext(KotlinCompileOnly::class, wholeClasspath = true) }`
+  — gives the snippet the SAME classpath the executor sees, so IntelliJ
+  Platform references resolve identically.
+- `toScriptSource(name)` to wrap the string source.
 
-- `kotlin.script.experimental.jvmhost.BasicJvmScriptingHost` — the
-  scripting-host entry point.
-- `kotlin.script.experimental.host.toScriptSource(name)` on the wrapped
-  source string.
-- `kotlin.script.experimental.jvmhost.JvmScriptCompiler` (`host.compiler`) —
-  invoke `compile(source, configuration)` (suspend) and inspect
-  `ResultWithDiagnostics<CompiledScript>`.
-- `kotlin.script.experimental.api.ScriptDiagnostic` — fields:
-  `severity` (FATAL/ERROR/WARNING/INFO/DEBUG), `message`, `sourcePath`,
-  `location?.start.line / col`, `code` (the factory-id-like string).
-- `kotlin.script.experimental.jvm.JvmScriptCompilationConfigurationBuilder`
-  with `jvm { dependenciesFromClassContext(KotlinExecutor::class, wholeClasspath = true) }`
-  so the snippet sees the SAME classpath the executor does (so references to
-  IntelliJ Platform classes resolve identically).
+Fallback (degraded): `ScriptEngineManager.getEngineByExtension("kts")`,
+cast to the `KotlinJsr223ScriptEngineImpl` interface, call `.compile(script)`.
+Diagnostics there come from a single `ScriptException` with `lineNumber()` /
+`columnNumber()` — usable but loses warnings. Implement primary; fall back
+only if `BasicJvmScriptingHost` isn't reachable on a future IDE build.
 
-Fallback path (if BasicJvmScriptingHost isn't reachable in some bundled-IDE
-build): use the existing `ScriptEngineManager.getEngineByExtension("kts")`
-path, cast to `org.jetbrains.kotlin.script.jsr223.KotlinJsr223ScriptEngineImpl`
-(or its interface), and call `.compile(script)`. Diagnostics there come from
-`javax.script.ScriptException` with `lineNumber()` / `columnNumber()` — less
-rich (single ERROR per call, no warnings) but acceptable as a degraded mode.
-
-Stability:
-- `BasicJvmScriptingHost` and `JvmScriptCompiler` are `@KotlinScript`-API
-  level — stable enough that the Kotlin team uses them for scratch files in
-  IntelliJ itself. Same package set already pulled transitively by
-  `kotlin-scripting-jsr223:2.1.20`.
-- `ScriptDiagnostic.Severity` is a stable public enum since Kotlin 1.3 scripting.
+Stability: `BasicJvmScriptingHost`, `JvmScriptCompiler`, `ScriptDiagnostic`
+are stable since Kotlin 1.3 scripting and already on the classpath via
+`kotlin-scripting-jsr223:2.1.20`.
 
 ## Threading & EDT model
 
-- Compile is **not** EDT — no Swing access, no PSI read, no IntelliJ project
-  state required (we compile against the plugin classloader's classpath).
-- Run the compile call inside `withContext(Dispatchers.IO) { … }` (or the
-  same `executor` cached thread pool `KotlinExecutor` already owns), wrapped
-  in `withTimeoutOrNull(10_000)` for the 10 s cap.
-- No `onEdtBlocking`. No `ReadAction.compute`.
-- No project required: `project` is only referenced for typed-binding setup
-  *at execute time*; for compile-only we substitute a synthetic `Project?`
-  parameter (the wrapper already declares it nullable) and the compiler
-  doesn't care it's never assigned.
+- Compile is **not** EDT — no Swing, no PSI, no IntelliJ project state.
+- Run inside `withContext(Dispatchers.IO) { … }` (or reuse the cached pool
+  `KotlinExecutor.executor`), wrapped in `withTimeoutOrNull(10_000)`.
+- No `onEdtBlocking`. No `ReadAction`. No `Project` required (the wrapper's
+  `project: Project?` parameter is left as a nullable formal — compiler
+  doesn't care it's never assigned).
 
 ## Timeout strategy
 
-- Hard cap: **10 000 ms** (`CLAUDE.md` rule).
-- First compile in a fresh JVM/classloader pays the kotlin-compiler cold
-  start (~2–3 s observed in `exec.execute_kotlin_in_ide` today). Subsequent
-  compiles using the SAME `ScriptEngine` / `JvmScriptCompiler` instance run
-  in ~150–400 ms.
-- `withTimeoutOrNull(10_000) { … }` around the suspend `compile(...)` call;
-  on timeout return `ok=false`, `diagnostics=[]`, and a single
-  `warnings = ["Compile timed out after 10000 ms"]` entry rather than
-  throwing.
-- See "Open questions" re: caching the compiler instance across calls to
-  amortise the cold start.
+- Hard cap **10 000 ms** (CLAUDE.md rule).
+- Cold start (first compile in this JVM) loads kotlin-compiler-embeddable —
+  ~2–3 s observed in execute today. Warm compiles ~150–400 ms.
+- `withTimeoutOrNull(10_000) { … }` around the suspend `compile(...)`; on
+  timeout return `ok=false`, `diagnostics=[]`, `warnings=["Compile timed out
+  after 10000 ms"]` — do NOT throw.
+- Caching the compiler instance (see open Qs) keeps the 10 s budget
+  comfortable on cold calls and trivial on warm ones.
 
 ## Edge cases
 
-1. **Empty / whitespace-only `code`** → `ok=true`, `diagnostics=[]`,
-   `warnings=[]`. The wrapper still produces a valid `class Plugin { fun run(...) = run { } }`
-   that compiles cleanly.
+1. **Empty / whitespace-only `code`** → `ok=true`, `diagnostics=[]`. The
+   wrapper still produces a valid `class Plugin { fun run(...) = run { } }`.
 2. **Compiler-internal exception** (uncaught crash inside `compile()`) →
-   catch, return a single `CompileDiagnostic(severity="FATAL", message=<msg>,
-   line=null, column=null)` and `ok=false`. Never propagate.
-3. **`kotlin-scripting-jsr223` not on classpath** (e.g. running in an IDE
-   without the Kotlin plugin AND someone bypassed the `kotlin-exec.xml`
-   condition) → `ok=false`, single FATAL diagnostic
-   `"Kotlin scripting host not available — kotlin-scripting-jsr223 missing"`.
-   In practice this branch is unreachable because the toolset is only
-   registered via `kotlin-exec.xml`.
+   catch, return single `CompileDiagnostic(severity="FATAL", message=<msg>)`,
+   `ok=false`. Never propagate.
+3. **`kotlin-scripting-jsr223` missing** → in practice unreachable
+   (`kotlin-exec.xml` gate), but defensively: single FATAL diagnostic
+   `"Kotlin scripting host not available"`, `ok=false`.
 4. **Multi-file snippets** (input contains a second top-level declaration the
-   wrapper would put inside a class body — illegal — OR `wrap=false` input
-   uses two `package` lines) → compiler returns ERROR diagnostics, surfaced
-   normally. Document in `@McpDescription` that JSR-223 is single-script only.
-5. **Snippet references a class not on the plugin classpath** (e.g. some
-   library only present in user projects) → ERROR diagnostic
-   `UNRESOLVED_REFERENCE` with the right line/column. Normal flow, `ok=false`.
-6. **Snippet uses the implicit helpers (`read`, `write`, `onEdt`, `project`,
-   `pluginDisposable`)** AND `wrap=true` → compiles cleanly because the
-   wrapper declares them in scope.
-7. **Same snippet with `wrap=false`** → ERROR `UNRESOLVED_REFERENCE: read`
-   (etc.). Document `wrap=true` is the safe default.
-8. **Snippet that imports `kotlinx.coroutines`** — the snippet's classpath
-   inherits the executor's, so coroutine classes resolve. Note: the plugin
-   ships JetBrains-patched coroutines (per build.gradle.kts comments) — same
-   for compile as for execute.
-9. **Warnings-only outcome** (deprecated API usage but no errors) →
-   `ok=true`, `diagnostics` contains the WARNINGs. Caller can choose to
-   treat warnings as failures.
-10. **Snippet uses `return` at top level** (illegal in `kotlin.run { … }`) →
-    ERROR diagnostic with line/column inside the user's portion, but the
-    reported line number is the *wrapped* file's line (not the user's). See
-    "Open questions" — offset adjustment is a v1.1 improvement.
+   wrapper would put inside a class body, or `wrap=false` input has two
+   `package` lines) → compiler returns ERROR diagnostics, surfaced normally.
+   `@McpDescription` already documents JSR-223 single-script limitation.
+5. **Snippet references a class not on the plugin classpath** (e.g. a
+   project-only library) → `UNRESOLVED_REFERENCE` ERROR with line/column,
+   `ok=false`. Normal flow.
+6. **Snippet uses implicit helpers (`read`, `write`, `onEdt`, `project`,
+   `pluginDisposable`) with `wrap=true`** → compiles cleanly.
+7. **Same input with `wrap=false`** → `UNRESOLVED_REFERENCE` on the helpers.
+   Document `wrap=true` as the safe default.
+8. **Warnings-only outcome** (deprecated API, no errors) → `ok=true`,
+   `diagnostics` contains WARNINGs. Callers wanting strict mode can
+   inspect themselves.
+9. **`return` at top level** (illegal in `kotlin.run { }`) → ERROR with the
+   *wrapped* file's line number, not the user's. Offset adjustment is a
+   v1.1 item (see open Qs).
 
 ## Files to create / modify
 
 | Path | Op | What |
 |------|----|------|
-| `src/main/kotlin/com/github/xepozz/ide/introspector/tools/ExecToolset.kt` | Edit | Add `@McpTool("exec.compile_check")` suspend method. Delegates to `KotlinCompileOnly.check(code, wrap)`. NO `ExecSettings.enabled` check, NO `AstSafetyChecker`, NO `ConfirmationManager`, NO `AuditLogger`. |
-| `src/main/kotlin/com/github/xepozz/ide/introspector/exec/KotlinCompileOnly.kt` | Create | Pure compile-only logic. Owns the `BasicJvmScriptingHost` + `JvmScriptCompiler` instances (optionally cached). Maps `ScriptDiagnostic` to `CompileDiagnostic`. Wraps in `withTimeoutOrNull(10_000)`. Recommended new file rather than adding to `KotlinExecutor.kt` so the run-loop stays focused and we don't accidentally couple compile-only to the confirmation/AST flow. |
-| `src/main/kotlin/com/github/xepozz/ide/introspector/model/args/ExecArgs.kt` | Edit | Add `@Serializable CompileCheckArgs(code, wrap=true)`. |
-| `src/main/kotlin/com/github/xepozz/ide/introspector/model/CompileCheckInfo.kt` | Create | `@Serializable CompileCheckResponse` + `CompileDiagnostic`. Kept separate from `ExecToolset.kt`'s `ExecuteKotlinResponse` to avoid one giant file. |
-| `src/test/kotlin/com/github/xepozz/ide/introspector/exec/KotlinCompileOnlyTest.kt` | Create | Unit tests — see test plan. |
+| `tools/ExecToolset.kt` | Edit | Add `@McpTool("exec.compile_check")` suspend method. Delegates to `KotlinCompileOnly.check(code, wrap)`. NO settings gate, NO AST check, NO confirmation, NO audit log. |
+| `exec/KotlinCompileOnly.kt` | Create | Compile-only logic. Owns the cached `BasicJvmScriptingHost` + `JvmScriptCompiler`. Maps `ScriptDiagnostic` → `CompileDiagnostic`. 10 s `withTimeoutOrNull` wrapper. New file (not added to `KotlinExecutor.kt`) so the run-loop stays focused on execution and we don't accidentally couple compile-only to confirmation/AST flow. |
+| `model/args/ExecArgs.kt` | Edit | Add `@Serializable CompileCheckArgs`. |
+| `model/CompileCheckInfo.kt` | Create | `@Serializable CompileCheckResponse` + `CompileDiagnostic`. |
+| `src/testScripting/kotlin/.../KotlinCompileOnlyTest.kt` | Create | See test plan — isolated source set. |
 
-No new META-INF wiring: the new tool lives in `ExecToolset`, which is already
-registered by `kotlin-exec.xml`. No new `<depends optional="true">` line.
+No META-INF changes: tool lives in `ExecToolset`, already registered by
+`kotlin-exec.xml`.
 
 ## Test plan & gradle implications
 
-This is the non-trivial part. `build.gradle.kts` (lines 90–97) explicitly
-removes `kotlin-scripting-jsr223`, `kotlin-compiler-embeddable`, and friends
-from `testRuntimeClasspath` because they bundle older platform resources that
-break `BasePlatformTestCase`. We need a way to test compile-only logic
-without re-introducing that breakage.
+`build.gradle.kts` (lines 90–97) explicitly **excludes** the scripting stack
+from `testRuntimeClasspath` because kotlin-compiler-embeddable bundles older
+platform resources (`messages/JavaPsiBundle.properties`, upstream
+coroutines) that shadow the IDE's modern copies and crash
+`BasePlatformTestCase` setUp. We need compile-only tests without breaking
+that.
 
-Three viable strategies, from lightest to heaviest — recommend (a) for v1:
+Three strategies, recommend (a):
 
-(a) **Pure-JVM unit test with an isolated scripting-only test source set**
-(`src/testScripting/kotlin/...`). New Gradle source set whose
-`testRuntimeClasspath` keeps the scripting deps but does NOT inherit the
-`BasePlatformTestCase` framework. Run via a new `testScripting` task wired
-into `check`. Tests there call `KotlinCompileOnly.check(...)` directly — no
-IntelliJ runtime, so no FileTypeManager preload to break. Pros: isolates the
-classpath issue. Cons: ~30 LoC of Gradle plumbing.
+(a) **Isolated `testScripting` source set** with its own
+    `testScriptingRuntimeClasspath` that KEEPS the scripting deps but does
+    NOT inherit `BasePlatformTestCase` or the IntelliJ test framework.
+    Tests call `KotlinCompileOnly.check(...)` directly — pure JVM, no
+    IntelliJ runtime, no resource clash. Wire `testScripting` into `check`.
+    ~30 LoC of Gradle plumbing. Robust.
 
-(b) **Re-include the scripting deps for the existing `test` source set, but
-exclude only the offending resources** (`messages/JavaPsiBundle.properties`
-etc.) via a jar-filtering trick. Pros: keeps one test task. Cons: brittle —
-the resource list changes between Kotlin versions and we'd be playing
-whack-a-mole.
+(b) **Re-include scripting on the existing `test` classpath but filter
+    offending resources** via jar transforms. Brittle — resource list
+    changes between Kotlin versions, plays whack-a-mole. Reject.
 
-(c) **Integration tests run only in `runIde` / `runPluginVerifier`** — skip
-unit testing entirely. Pros: zero gradle changes. Cons: no fast feedback,
-diagnostics-shape regressions only caught by manual testing.
+(c) **`runIde`-only integration tests**, skip unit testing. Zero Gradle
+    change, but no fast feedback and silent regressions. Reject for v1.
 
-Concrete unit-test scenarios (under strategy (a)):
+Concrete test scenarios under strategy (a):
 
-1. **Empty code** → `ok=true`, `diagnostics.isEmpty()`.
-2. **Trivially valid wrapped snippet** (`"42"` with `wrap=true`) → `ok=true`,
-   any diagnostics are WARNING/INFO only.
-3. **Syntax error** (`"val x ="`) → `ok=false`, at least one
-   `severity=="ERROR"` diagnostic, `line != null`, `column != null`.
-4. **Unresolved reference** (`"foo.bar()"` with `wrap=true`) → `ok=false`,
-   diagnostic message contains `"Unresolved reference"` and `factoryId`
-   contains `"UNRESOLVED_REFERENCE"`.
-5. **Uses implicit helpers (`read { 42 }`) with `wrap=true`** → `ok=true`
-   (compiles because the wrapper declares `read`).
-6. **Same input with `wrap=false`** → `ok=false`, unresolved reference on
+1. Empty code → `ok=true`, `diagnostics.isEmpty()`.
+2. Trivially valid wrapped snippet (`"42"`, `wrap=true`) → `ok=true`.
+3. Syntax error (`"val x ="`) → `ok=false`, at least one ERROR with
+   non-null `line` and `column`.
+4. Unresolved reference (`"foo.bar()"`, `wrap=true`) → `ok=false`,
+   message contains `"Unresolved reference"`, `factoryId` mentions
+   `UNRESOLVED_REFERENCE`.
+5. `read { 42 }` with `wrap=true` → `ok=true` (wrapper exposes `read`).
+6. Same input with `wrap=false` → `ok=false`, unresolved reference on
    `read`.
-7. **Compiler crash simulation** (inject a malformed source path) → caught,
-   returns FATAL diagnostic, never propagates.
-8. **Timeout** (parameterised test with a 1 ms hard timeout substituted via
-   constructor arg) → `ok=false`, single `warnings` entry mentioning
-   "timed out", no diagnostics.
+7. Constructor-injected 1 ms timeout → `ok=false`, `warnings` mentions
+   "timed out", `diagnostics.isEmpty()`.
+8. Simulated compiler crash (forced exception in a test-only seam) →
+   caught, single FATAL diagnostic, never propagates.
 
-NO platform test (`BasePlatformTestCase`) for this feature — compile-only
-logic doesn't need an IntelliJ project. The `KotlinCompileOnly.check`
-function takes only `(code: String, wrap: Boolean)` and returns
-`CompileCheckResponse`. The `ExecToolset` wrapper is one `delegate` call —
-not worth its own platform test.
+NO `BasePlatformTestCase` test — compile-only logic doesn't need an IntelliJ
+project. The `ExecToolset` wrapper is a one-line delegate; not worth its own
+test class.
 
 ## Estimated effort
 
-~0.5 day total (4 h):
-- `CompileCheckInfo` model + `CompileCheckArgs`: 15 min.
-- `KotlinCompileOnly` implementation incl. diagnostic mapping and 10 s
-  timeout wrapper: 1.5 h.
+~0.5 day (4 h):
+- Model + args: 15 min.
+- `KotlinCompileOnly` (compiler instance + diagnostic mapping + timeout): 1.5 h.
 - `ExecToolset.exec_compile_check` wiring + `@McpDescription`: 30 min.
-- Gradle `testScripting` source set (strategy (a)) + 8 unit tests: 1 h.
-- Manual smoke test in `runIde`: 30 min.
-- Doc regeneration + plan polish: 15 min.
+- Gradle `testScripting` source set + 8 unit tests: 1 h.
+- Manual smoke in `runIde`: 30 min.
+- Doc regen + polish: 15 min.
 
 ## Open questions / risks
 
-- **Should we cache the `BasicJvmScriptingHost` / `JvmScriptCompiler` across
-  calls?** Likely yes — a single static instance held by `KotlinCompileOnly`
-  amortises the ~3 s cold start to ~200 ms warm. Each compile gets a fresh
-  `ScriptCompilationConfiguration`, so cross-call state leakage is minimal.
-  Risk: the compiler holds a classloader pinning the plugin's classes, which
-  could complicate plugin reload during dev. Decision for v1: **cache** — the
-  performance win is large and `exec.execute_kotlin_in_ide` already has the
-  reload-pinning concern.
-- **Should `wrap=true` use the EXACT same `CodeWrapper.wrap` output the
-  executor uses (incl. `Plugin#run`, `read`/`write`/`onEdt` helpers,
-  `project`/`pluginDisposable` bindings)?** **Yes.** This is the whole point
-  of `wrap=true`: compile passing here MUST imply
-  `exec.execute_kotlin_in_ide` won't reject for unresolved references. Reuse
-  `CodeWrapper.wrap` verbatim, do not re-implement.
-- **Should we support `language: "kotlin" | "java"` for future Java
-  compile-checking?** **Out of scope for v1.** Java compile would need the
-  IDE's `JavaCompiler` and would also require `com.intellij.modules.java`,
-  pulling `exec.compile_check` into `java-introspect.xml` territory. Defer
-  until concrete demand exists.
-- **Line/column offset adjustment for `wrap=true`**: the wrapper prepends
-  ~20 lines before the user code. Diagnostics report wrapped-script line
-  numbers, which are confusing for callers. v1.1 improvement: subtract a
-  known offset (`CodeWrapper.userCodeStartLine`) for diagnostics whose line
-  is in the user-code range, leaving wrapper-internal errors alone. Out of
-  scope for v1 — surface the raw `line` and document the offset in
+- **Support `language: "kotlin" | "java"` for future Java compile-check?**
+  Out of scope for v1. Java compile needs `JavaCompiler` and would pull
+  this tool into `java-introspect.xml` territory. Defer until concrete demand.
+- **Cache the `JvmScriptCompiler` across calls?** Yes — amortises the ~3 s
+  cold start to ~200 ms warm. A single static instance held by
+  `KotlinCompileOnly`; each call gets a fresh
+  `ScriptCompilationConfiguration` so cross-call state leakage is minimal.
+  Trade-off: caches a classloader pinning plugin classes, which is the
+  same concern `exec.execute_kotlin_in_ide` already has.
+- **Should `wrap=true` use the EXACT same `CodeWrapper.wrap` output as the
+  executor (Plugin#run wrapper, `read`/`write`/`onEdt` helpers,
+  `project`/`pluginDisposable` bindings)?** Yes — this is the whole point.
+  Compile passing here MUST imply execute won't reject for unresolved
+  references. Reuse `CodeWrapper.wrap` verbatim; do not re-implement.
+- **Line/column offset adjustment for `wrap=true`**: wrapper prepends ~20
+  lines, so diagnostics report wrapped-script line numbers. v1.1: subtract
+  a known `CodeWrapper.userCodeStartLine` for diagnostics in the user-code
+  range. Out of scope for v1 — surface raw `line`, document offset in
   `@McpDescription`.
-- **Should an audit log entry be written?** No, by default — compile is
-  read-only. If someone really wants observability, a debug-level
-  `Logger.getInstance(...).debug(...)` call inside `KotlinCompileOnly` is
-  enough.
-- **Should `ok` consider WARNING as failure?** No — `ok=true` iff zero ERROR
-  or FATAL diagnostics. Callers who want strict mode can inspect
-  `diagnostics.any { it.severity in ("ERROR", "FATAL") }` themselves.
+- **Audit log entry?** No, by default — compile is read-only. Optional
+  `Logger.getInstance(...).debug(...)` is enough.
+- **Should `ok` treat WARNING as failure?** No — `ok=true` iff zero
+  ERROR/FATAL. Callers can inspect `diagnostics` themselves for strict mode.
 
 ## References
 
-- Sibling tool: `tools/ExecToolset.kt` — `exec_execute_kotlin_in_ide`.
+- Sibling tool: `tools/ExecToolset.kt` (`exec_execute_kotlin_in_ide`).
 - Wrapper reused verbatim: `exec/CodeWrapper.kt`.
 - Engine acquisition pattern to mirror: `exec/KotlinExecutor.obtainEngine`.
 - Build-classpath rationale (why scripting is `runtimeOnly` and excluded
   from `testRuntimeClasspath`): `build.gradle.kts` lines 47–97.
-- Kotlin scripting docs:
-  `https://github.com/Kotlin/KEEP/blob/master/proposals/scripting-support.md`
-  and `https://github.com/JetBrains/kotlin/tree/master/libraries/scripting/jvm-host`
+- Kotlin scripting:
+  `https://github.com/JetBrains/kotlin/tree/master/libraries/scripting/jvm-host`
   for `BasicJvmScriptingHost` / `JvmScriptCompiler`.
-- JetBrains MCP equivalent: **none** for snippet-level compile. `build_project`
-  exists but rebuilds the whole project — fundamentally different scope.
+- JetBrains MCP equivalent: **none** for snippet-level compile.
+  `build_project` exists but rebuilds the whole project — different scope.

@@ -96,30 +96,29 @@ suspend fun log_errors_since(
 |exception is one ErrorEntry with a full stacktrace string.
 |
 |Use this when: 'what failed since I clicked Build?', 'any errors in the last 5
-|minutes?', triaging a flaky session. Faster than log.tail+filter for the common
-|'show me the errors' question because it caps to WARN+ at parse time and
-|short-circuits on the time floor.
+|minutes?', triaging a flaky session. Faster than log.tail+filter for 'show me
+|errors' because it caps to WARN+ at parse time and short-circuits on time.
 |
-|Do NOT use this when: you want raw last-N lines (log.tail), or you need
+|Do NOT use this when: you want raw last-N lines (log.tail), or need
 |DEBUG/TRACE entries (also log.tail).
 |
 |Returns: { since, errors: ErrorEntry[], total, truncated, redacted } where
 |ErrorEntry = { timestamp, thread, severity, category, message, stacktrace
-|(present when groupByThrowable=true and continuations were attached, else
-|null), throwableClass (parsed from 'foo.Bar.Baz: …' prefix, else null), raw
-|(joined original lines) }. `redacted=true` if a secret pattern was masked.
+|(present when groupByThrowable=true and continuations attached, else null),
+|throwableClass (parsed from 'foo.Bar.Baz: …' prefix, else null), raw (joined
+|original lines) }. `redacted=true` if a secret pattern was masked.
 |
-|Time parsing: 'yyyy-MM-ddTHH:mm:ss' in the JVM default zone, optionally with
-|offset or 'Z'. Log timestamps have no zone — comparison is in JVM zone.
+|Time parsing: 'yyyy-MM-ddTHH:mm:ss' in JVM default zone, optional offset/'Z'.
+|Log timestamps carry no zone — comparison is in JVM zone.
 |
 |Rotation: walks idea.log + idea.log.1, .2 … as needed (cap 5 rotations, 8 MB
 |cumulative budget) when the cutoff predates the current log's first line.
 |
 |Examples:
-|  lastMinutes=10                                    — errors in last 10 min
-|  sinceIsoTimestamp="2026-05-24T14:00:00"           — since 2 pm today
-|  minSeverity="ERROR", limit=20                     — only true errors, top 20
-|  groupByThrowable=false                            — don't collapse stacktraces
+|  lastMinutes=10                            — errors in last 10 min
+|  sinceIsoTimestamp="2026-05-24T14:00:00"   — since 2 pm today
+|  minSeverity="ERROR", limit=20             — only true errors, top 20
+|  groupByThrowable=false                    — don't collapse stacktraces
 ```
 
 ## Args + response models
