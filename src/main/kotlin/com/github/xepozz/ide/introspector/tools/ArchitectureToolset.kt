@@ -673,7 +673,7 @@ class ArchitectureToolset : McpToolset {
         query: String? = null,
         @McpDescription("Exact match on plugin id (e.g. 'com.intellij', 'org.jetbrains.kotlin'). Restricts the candidate set via ActionManagerEx.getPluginActions — the cheapest filter when known.")
         providedByPluginId: String? = null,
-        @McpDescription("Include actions marked <action internal=\"true\"/> or @ApiStatus.Internal. Default false (end-user noise filter).")
+        @McpDescription("Reserved — currently a NO-OP. The platform itself decides whether <action internal=\"true\"/> entries are registered (based on -Didea.is.internal): when off they never appear in the action manager and we cannot resurrect them; when on they're indistinguishable from regular actions in any public API. Kept on the signature so a future platform-level detector can be wired without breaking callers.")
         includeInternal: Boolean = false,
         @McpDescription("Cap on returned actions. Coerced into 1..2000. Default 200.")
         limit: Int = 200,

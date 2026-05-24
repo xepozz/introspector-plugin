@@ -22,8 +22,15 @@ import kotlinx.serialization.Serializable
  *    populate it lazily later — current implementation leaves it null.
  *  - [iconPath] is the icon resource path from `templatePresentation.icon?.toString()`,
  *    or null when no icon is registered. Best-effort: some icons stringify to garbage.
- *  - [isInternal] mirrors `AnAction.isInternal()` (delegates to `<action internal="true">`).
- *    By default the catalog excludes these entries — pass `includeInternal=true` to opt in.
+ *  - [isInternal] mirrors `<action internal="true">`. The platform consumes that flag at
+ *    parser time — actions marked `internal="true"` are NOT registered when the IDE is
+ *    running without `-Didea.is.internal=true`, and when it IS running with internal mode
+ *    on they're registered identically to regular actions with no observable flag on the
+ *    [com.intellij.openapi.actionSystem.AnAction] instance. There is no public, supported
+ *    way to recover that bit post-registration, so this field is **always false** today
+ *    and the `includeInternal` arg on `arch.list_actions` is a no-op (kept for forward
+ *    compatibility and cache-key stability). See [com.github.xepozz.ide.introspector.core.ActionInventory.resolveAction]
+ *    kdoc for the long version.
  */
 @Serializable
 data class ActionInfo(

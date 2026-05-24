@@ -352,7 +352,7 @@ Examples:
 | --- | --- | --- |
 | `query` | `String?` | Case-insensitive substring on action id + display text. When alphanumeric (regex ^[A-Za-z0-9_.]+$) triggers the registry prefix fast-path. Null = no query filter. |
 | `providedByPluginId` | `String?` | Exact match on plugin id (e.g. 'com.intellij', 'org.jetbrains.kotlin'). Restricts the candidate set via ActionManagerEx.getPluginActions — the cheapest filter when known. |
-| `includeInternal` | `Boolean` | Include actions marked <action internal="true"/> or @ApiStatus.Internal. Default false (end-user noise filter). |
+| `includeInternal` | `Boolean` | Reserved — currently a NO-OP. The platform itself decides whether <action internal="true"/> entries are registered (based on -Didea.is.internal): when off they never appear in the action manager and we cannot resurrect them; when on they're indistinguishable from regular actions in any public API. Kept on the signature so a future platform-level detector can be wired without breaking callers. |
 | `limit` | `Int` | Cap on returned actions. Coerced into 1..2000. Default 200. |
 
 **Returns:** `ListActionsResponse`

@@ -64,9 +64,13 @@ class ActionInventory {
         limit: Int = 200,
     ): ListActionsResponse {
         val clampedLimit = limit.coerceIn(1, MAX_LIMIT)
+        // NOTE: `includeInternal` is currently a NO-OP — see kdoc on [isInternalAction] and the
+        // ActionInfo.isInternal field docs. It still participates in the cache key so a
+        // future implementation that wires the flag through doesn't accidentally serve a
+        // stale unfiltered list to callers that opted in.
         val key = CacheKey(query, providedByPluginId, includeInternal, clampedLimit)
-        val cache = perKeyCache.computeIfAbsent(key) {
-            TtlCache(ttlMs = CACHE_TTL_MS) { collect(it) }
+        val cache = perKeyCache.computeIfAbsent(key) { k ->
+            TtlCache(ttlMs = CACHE_TTL_MS) { collect(k) }
         }
         return cache.get()
     }
@@ -117,10 +121,12 @@ class ActionInventory {
                 break
             }
 
+            // Substring filtering needs the display text → resolve the action (cheap stub when
+            // possible). For the cheaper no-filter path we still resolve so toActionInfo can
+            // populate text/description, but `includeInternal` is intentionally NOT consulted
+            // because the platform itself decides registration based on internal-mode (see
+            // kdoc on [isInternalAction]) — we have no post-registration way to distinguish.
             val anAction: AnAction? = resolveAction(am, id)
-            val isInternal = anAction?.let { isInternalAction(it) } ?: false
-
-            if (!key.includeInternal && isInternal) continue
 
             // Apply substring filter against id + display text after we have the action.
             if (needSubstring) {
@@ -132,7 +138,7 @@ class ActionInventory {
 
             matchedCount++
             if (out.size < key.limit) {
-                out.add(toActionInfo(id, anAction, reversePluginMap, isInternal))
+                out.add(toActionInfo(id, anAction, reversePluginMap, isInternal = false))
             } else {
                 truncated = true
                 // Keep counting matches so total is accurate. But to honour the 10 s budget
@@ -145,21 +151,37 @@ class ActionInventory {
     }
 
     /**
-     * `AnAction.isInternal()` was removed from the 252 platform — `<action internal="true"/>`
-     * is now surfaced via the `@ApiStatus.Internal` annotation on the action class itself.
-     * Check that annotation reflectively so we don't depend on the old method signature.
+     * `<action internal="true"/>` is a **registration-time** flag, NOT a queryable property of
+     * a registered [AnAction]. The platform's own [com.intellij.openapi.actionSystem.impl.ActionManagerImpl]
+     * reads `ActionElement.ActionDescriptorAction.isInternal` while parsing plugin.xml and:
+     *
+     *  - If the IDE is NOT in internal mode ([com.intellij.openapi.application.Application.isInternal]
+     *    returns `false`, i.e. `-Didea.is.internal=true` is absent), the action is appended to
+     *    the private `notRegisteredInternalActionIds` list and `processActionElement` returns
+     *    `null` — the action is **never registered**. It does not appear in
+     *    [com.intellij.openapi.actionSystem.ex.ActionManagerEx.getActionIdList], so our
+     *    `includeInternal=true` cannot resurrect it.
+     *  - If the IDE IS in internal mode, the action is registered identically to a regular
+     *    action — the `isInternal` bit is consumed by the parser and not stored on the
+     *    resulting [AnAction] instance. There is no public, supported API exposing this.
+     *
+     * The previous implementation checked `@ApiStatus.Internal` on the action class. That
+     * annotation is an API-stability marker — orthogonal to runtime visibility — and the
+     * two sets barely overlap: most platform internal-mode actions
+     * (e.g. `Internal.UI.ShowUiInspector`, `DumpInspectionDescriptions`) are public Java
+     * classes with no `@ApiStatus.Internal`, while many `@ApiStatus.Internal`-marked
+     * classes are perfectly user-facing.
+     *
+     * Until a stable lookup surfaces in a future platform release, the `includeInternal`
+     * arg on `arch.list_actions` is a **no-op** and [ActionInfo.isInternal] is always
+     * `false`. Callers running an internal-mode IDE will see the actions in the response
+     * either way; callers running a normal IDE never could.
      */
-    private fun isInternalAction(action: AnAction): Boolean = runCatching {
-        action.javaClass.isAnnotationPresent(org.jetbrains.annotations.ApiStatus.Internal::class.java)
-    }.getOrDefault(false)
-
     private fun resolveAction(am: ActionManager, id: String): AnAction? {
         // Try `getActionOrStub` reflectively — it's `@ApiStatus.Internal` and not part of
         // the public ActionManager surface. Stubs are far cheaper than full class loads.
         val stub = runCatching {
-            val method = am.javaClass.methods.firstOrNull {
-                it.name == "getActionOrStub" && it.parameterCount == 1
-            }
+            val method = GET_ACTION_OR_STUB_METHOD.value
             method?.invoke(am, id) as? AnAction
         }.getOrNull()
         if (stub != null) return stub
@@ -221,6 +243,21 @@ class ActionInventory {
 
         /** Matches the pattern documented in the plan: alphanumeric + dot + underscore. */
         private val PREFIX_QUERY_REGEX = Regex("^[A-Za-z0-9_.]+$")
+
+        /**
+         * One-shot reflective lookup for [com.intellij.openapi.actionSystem.impl.ActionManagerImpl.getActionOrStub].
+         * The method is `@ApiStatus.Internal` so we can't bind to it at compile time, but the
+         * concrete class is a singleton — its `Class` object is stable across calls. Hoisting
+         * the [java.lang.Class.getMethods] scan out of the per-id loop avoids ~3000 fresh
+         * `Method[]` allocations (one per call to `getMethods()`) on an unfiltered walk.
+         */
+        private val GET_ACTION_OR_STUB_METHOD: Lazy<java.lang.reflect.Method?> = lazy {
+            runCatching {
+                ActionManager.getInstance()?.javaClass?.methods?.firstOrNull {
+                    it.name == "getActionOrStub" && it.parameterCount == 1
+                }
+            }.getOrNull()
+        }
 
         fun getInstance(): ActionInventory = service()
 
