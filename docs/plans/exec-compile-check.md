@@ -97,13 +97,12 @@ suspend fun exec_compile_check(
 |  exec.compile_check code="import kotlin.math.*; val x: Int = sqrt(4.0).toInt()" wrap=false
 ```
 
-**Args:**
-- `code: String` — required, the snippet. No tool-side size limit.
-- `wrap: Boolean = true` — if `true`, run input through `CodeWrapper.wrap`
-  before compiling so it lints under the executor's symbol table.
+**Args:** `code: String` (snippet, no tool-side size limit); `wrap: Boolean = true`
+(if true, route through `CodeWrapper.wrap` so it lints under the executor's
+symbol table).
 
-**Response model** (new file `model/CompileCheckInfo.kt`; args alongside
-existing `model/args/ExecArgs.kt`):
+**Response model** — new `model/CompileCheckInfo.kt`; args alongside
+existing `model/args/ExecArgs.kt`:
 
 ```kotlin
 @Serializable data class CompileCheckResponse(
@@ -112,16 +111,11 @@ existing `model/args/ExecArgs.kt`):
     val warnings: List<String> = emptyList(),
     val durationMs: Long,
 )
-
 @Serializable data class CompileDiagnostic(
-    val severity: String,        // FATAL | ERROR | WARNING | INFO | DEBUG
-    val line: Int? = null,
-    val column: Int? = null,
-    val file: String? = null,
-    val message: String,
-    val factoryId: String? = null,
+    val severity: String,                // FATAL|ERROR|WARNING|INFO|DEBUG
+    val line: Int? = null, val column: Int? = null,
+    val file: String? = null, val message: String, val factoryId: String? = null,
 )
-
 @Serializable data class CompileCheckArgs(val code: String, val wrap: Boolean = true)
 ```
 
@@ -241,49 +235,41 @@ project. The `ExecToolset` wrapper is a one-line delegate.
 
 ## Estimated effort
 
-~0.5 day (4 h):
-- Model + args: 15 min.
-- `KotlinCompileOnly` (compiler instance + diagnostic mapping + timeout): 1.5 h.
-- `ExecToolset.exec_compile_check` wiring + `@McpDescription`: 30 min.
-- Gradle `testScripting` source set + 8 unit tests: 1 h.
-- Manual smoke in `runIde`: 30 min.
-- Doc regen + polish: 15 min.
+~0.5 day (≈4 h): model + args (15 min), `KotlinCompileOnly` incl. diagnostic
+mapping and 10 s timeout (1.5 h), `ExecToolset.exec_compile_check` wiring +
+`@McpDescription` (30 min), Gradle `testScripting` source set + 7 unit tests
+(1 h), manual `runIde` smoke (30 min), doc regen + polish (15 min).
 
 ## Open questions / risks
 
-- **Support `language: "kotlin" | "java"` for future Java compile-check?**
-  Out of scope for v1. Java compile needs `JavaCompiler` and would pull
-  this tool into `java-introspect.xml` territory. Defer until concrete demand.
+- **Java compile-check via `language: "kotlin" | "java"`?** Out of scope for
+  v1 — needs `JavaCompiler` and would pull this into `java-introspect.xml`
+  territory. Defer until concrete demand.
 - **Cache the `JvmScriptCompiler` across calls?** Yes — amortises the ~3 s
-  cold start to ~200 ms warm. A single static instance held by
-  `KotlinCompileOnly`; each call gets a fresh
-  `ScriptCompilationConfiguration` so cross-call state leakage is minimal.
-  Trade-off: caches a classloader pinning plugin classes, which is the
-  same concern `exec.execute_kotlin_in_ide` already has.
-- **Should `wrap=true` use the EXACT same `CodeWrapper.wrap` output as the
-  executor (Plugin#run wrapper, `read`/`write`/`onEdt` helpers,
-  `project`/`pluginDisposable` bindings)?** Yes — this is the whole point.
-  Compile passing here MUST imply execute won't reject for unresolved
-  references. Reuse `CodeWrapper.wrap` verbatim; do not re-implement.
-- **Line/column offset adjustment for `wrap=true`**: wrapper prepends ~20
+  cold start to ~200 ms warm. Single static instance in `KotlinCompileOnly`;
+  each call gets a fresh `ScriptCompilationConfiguration` so cross-call state
+  leakage is minimal. Caches a classloader pinning plugin classes — same
+  concern `exec.execute_kotlin_in_ide` already has.
+- **Reuse `CodeWrapper.wrap` verbatim for `wrap=true`?** Yes. The whole point
+  is that compile passing implies execute won't reject for unresolved refs.
+  Reuse; do not re-implement.
+- **Line/column offset adjustment** for `wrap=true`: wrapper prepends ~20
   lines, so diagnostics report wrapped-script line numbers. v1.1: subtract
-  a known `CodeWrapper.userCodeStartLine` for diagnostics in the user-code
-  range. Out of scope for v1 — surface raw `line`, document offset in
+  a `CodeWrapper.userCodeStartLine` constant for diagnostics in the
+  user-code range. v1 surfaces raw lines and documents the offset in
   `@McpDescription`.
-- **Audit log entry?** No, by default — compile is read-only. Optional
-  `Logger.getInstance(...).debug(...)` is enough.
-- **Should `ok` treat WARNING as failure?** No — `ok=true` iff zero
-  ERROR/FATAL. Callers can inspect `diagnostics` themselves for strict mode.
+- **Audit log entry?** No by default — compile is read-only. Optional debug
+  log via `Logger.getInstance(...).debug(...)` is enough.
+- **Treat WARNING as failure?** No — `ok=true` iff zero ERROR/FATAL.
+  Callers can apply strict mode by inspecting `diagnostics`.
 
 ## References
 
-- Sibling tool: `tools/ExecToolset.kt` (`exec_execute_kotlin_in_ide`).
-- Wrapper reused verbatim: `exec/CodeWrapper.kt`.
-- Engine acquisition pattern to mirror: `exec/KotlinExecutor.obtainEngine`.
-- Build-classpath rationale (why scripting is `runtimeOnly` and excluded
-  from `testRuntimeClasspath`): `build.gradle.kts` lines 47–97.
-- Kotlin scripting:
-  `https://github.com/JetBrains/kotlin/tree/master/libraries/scripting/jvm-host`
-  for `BasicJvmScriptingHost` / `JvmScriptCompiler`.
-- JetBrains MCP equivalent: **none** for snippet-level compile.
-  `build_project` exists but rebuilds the whole project — different scope.
+- Sibling: `tools/ExecToolset.kt` (`exec_execute_kotlin_in_ide`).
+- Wrapper reused: `exec/CodeWrapper.kt`. Engine pattern: `KotlinExecutor.obtainEngine`.
+- Why scripting is `runtimeOnly` + excluded from `testRuntimeClasspath`:
+  `build.gradle.kts` lines 47–97.
+- Kotlin scripting host:
+  `https://github.com/JetBrains/kotlin/tree/master/libraries/scripting/jvm-host`.
+- JetBrains MCP equivalent: **none** for snippet-level compile (`build_project`
+  rebuilds the whole project — different scope).

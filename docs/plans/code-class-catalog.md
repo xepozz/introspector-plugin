@@ -21,18 +21,13 @@ ready for a `code.get_source` follow-up.
 @McpTool(name = "code.list_classes_in_module")
 @McpDescription("""…see below…""")
 suspend fun code_list_classes_in_module(
-    @McpDescription("Module name as reported by IntelliJ (matches JetBrains MCP get_project_modules).")
-    moduleName: String,
-    @McpDescription("Optional package-FQN prefix filter. Null/empty matches all.")
-    packagePrefix: String? = null,
-    @McpDescription("Include test source roots. Default false.")
-    includeTests: Boolean = false,
-    @McpDescription("Include generated source roots (build/, .gen/, kapt). Default true.")
-    includeGenerated: Boolean = true,
-    @McpDescription("Restrict to kinds. Allowed: 'class','interface','enum','record','annotation','kotlinFileFacade'.")
+    @McpDescription("Module name (matches JetBrains MCP get_project_modules).") moduleName: String,
+    @McpDescription("Optional package-FQN prefix filter. Null/empty matches all.") packagePrefix: String? = null,
+    @McpDescription("Include test source roots. Default false.") includeTests: Boolean = false,
+    @McpDescription("Include generated source roots (build/, .gen/, kapt). Default true.") includeGenerated: Boolean = true,
+    @McpDescription("Allowed kinds: 'class','interface','enum','record','annotation','kotlinFileFacade'.")
     kinds: List<String> = listOf("class","interface","enum","record","annotation","kotlinFileFacade"),
-    @McpDescription("Cap on results. Default 1000, hard upper bound 5000.")
-    limit: Int = 1000,
+    @McpDescription("Cap on results. Default 1000, hard upper bound 5000.") limit: Int = 1000,
 ): ListClassesResponse
 ```
 
@@ -72,16 +67,13 @@ suspend fun code_list_classes_in_module(
 @McpTool(name = "code.list_classes_in_package")
 @McpDescription("""…see below…""")
 suspend fun code_list_classes_in_package(
-    @McpDescription("Fully-qualified package name. Empty string '' = default/root package.")
-    packageFqn: String,
-    @McpDescription("Recurse into sub-packages. Default false.")
-    recursive: Boolean = false,
+    @McpDescription("Fully-qualified package name. '' = default/root package.") packageFqn: String,
+    @McpDescription("Recurse into sub-packages. Default false.") recursive: Boolean = false,
     @McpDescription("Include library jars (rt.jar alone has ~30k classes). Default false — project sources only.")
     includeLibraries: Boolean = false,
-    @McpDescription("Restrict to kinds. Allowed: 'class','interface','enum','record','annotation','kotlinFileFacade'.")
+    @McpDescription("Allowed kinds: 'class','interface','enum','record','annotation','kotlinFileFacade'.")
     kinds: List<String> = listOf("class","interface","enum","record","annotation","kotlinFileFacade"),
-    @McpDescription("Cap on results. Default 500, hard upper bound 5000.")
-    limit: Int = 500,
+    @McpDescription("Cap on results. Default 500, hard upper bound 5000.") limit: Int = 500,
 ): ListClassesResponse
 ```
 
@@ -124,36 +116,16 @@ New file `model/args/CodeArgs.kt` (per-group split matches `PsiArgs`, `UiArgs`,
 
 Append to `model/ClassSourceInfo.kt`:
 
-```kotlin
-@Serializable data class DeclarationRange(val startOffset: Int, val endOffset: Int)
+- `DeclarationRange(startOffset: Int, endOffset: Int)`.
+- `ClassEntry(fqn, simpleName, package, kind, fileUrl?, declarationRange?, byteLength?)`
+  — `package` is `""` for default; `kind` ∈ `class|interface|enum|record|annotation
+  |kotlinFileFacade`; `byteLength` optional file-size hint so agents can budget
+  `code.get_source` follow-ups.
+- `ListClassesResponse(scope, classes: List<ClassEntry>, total, truncated, timedOut=false, note?=null)`
+  — `scope` echoes `moduleName` (module variant) or `packageFqn` (package variant);
+  `note` set when `DumbService.isDumb(project)`.
 
-@Serializable
-data class ClassEntry(
-    val fqn: String,
-    val simpleName: String,
-    /** Package FQN; "" for default. */
-    val `package`: String,
-    /** "class"|"interface"|"enum"|"record"|"annotation"|"kotlinFileFacade". */
-    val kind: String,
-    val fileUrl: String?,
-    val declarationRange: DeclarationRange? = null,
-    /** Optional file size hint so agents can budget code.get_source follow-ups. */
-    val byteLength: Int? = null,
-)
-
-@Serializable
-data class ListClassesResponse(
-    /** Echoes moduleName (module variant) or packageFqn (package variant). */
-    val scope: String,
-    val classes: List<ClassEntry>,
-    val total: Int,
-    val truncated: Boolean,
-    /** True when the 10s cap fired before enumeration finished. */
-    val timedOut: Boolean = false,
-    /** Set when DumbService.isDumb and results may be incomplete. */
-    val note: String? = null,
-)
-```
+All `@Serializable`. `ClassEntry` is shared between both tools.
 
 ## IntelliJ APIs used
 
@@ -224,20 +196,19 @@ If a realistic worst case still exceeds 10 s, **narrow the tool** (require
 
 ## Files to create/modify
 
-NO new tool group, NO new META-INF wiring. `code.*` already loads behind
-`java-introspect.xml` (depends on `com.intellij.modules.java`) — the exact gate
-these tools need.
+NO new tool group, NO new META-INF wiring — `code.*` already loads behind
+`java-introspect.xml` (depends on `com.intellij.modules.java`).
 
 | Path | Op | What |
 |------|----|------|
 | `tools/CodeSourceToolset.kt` | Edit | Add two `@McpTool` methods (~40 LOC + descriptions). |
-| `core/ClassCatalog.kt` | Create | Headless enumeration: `listInModule(project, args)` + `listInPackage(project, args)`. Pure-PSI reads. Kept separate from `ClassSourceResolver` to preserve its "resolve-one" focus. |
+| `core/ClassCatalog.kt` | Create | Headless `listInModule` + `listInPackage`, pure-PSI reads. Kept separate from `ClassSourceResolver` so the latter stays "resolve-one"-focused. |
 | `model/ClassSourceInfo.kt` | Edit | Append `ClassEntry`, `DeclarationRange`, `ListClassesResponse`. |
-| `model/args/CodeArgs.kt` | Create | `ListClassesInModuleArgs`, `ListClassesInPackageArgs`. |
-| `src/test/kotlin/.../core/ClassCatalogFilterTest.kt` | Create | Unit: kind filter, packagePrefix matching, limit truncation. |
-| `src/test/kotlin/.../core/platform/ClassCatalogPlatformTest.kt` | Create | `BasePlatformTestCase` fixture: two modules with Java + Kotlin sources + a generated dir. |
+| `model/args/CodeArgs.kt` | Create | New per-group args file. |
+| `src/test/kotlin/.../core/ClassCatalogFilterTest.kt` | Create | Unit. |
+| `src/test/kotlin/.../core/platform/ClassCatalogPlatformTest.kt` | Create | Platform (multi-module Java+Kotlin fixture). |
 
-`docs/MCP_TOOLS.md` regenerates from annotations on `./gradlew compileKotlin`.
+`docs/MCP_TOOLS.md` regenerates on `./gradlew compileKotlin`.
 
 ## Test plan
 
@@ -262,15 +233,10 @@ Toolset wrappers are thin enough not to need their own test class.
 
 ## Estimated effort
 
-| Step | Hours |
-|------|-------|
-| Models + `CodeArgs.kt` | 0.5 |
-| `ClassCatalog.kt` (both methods, deadline, facade detection) | 3 |
-| Two `@McpTool` wrappers + descriptions | 1 |
-| Unit tests | 1 |
-| Platform tests (multi-module fixture is the slow bit) | 2 |
-| Doc-gen + manual `runIde` smoke | 0.5 |
-| **Total** | **~1 day** |
+Models + `CodeArgs.kt` 0.5h; `ClassCatalog.kt` (both methods, deadline, facade
+detection) 3h; two `@McpTool` wrappers + descriptions 1h; unit tests 1h; platform
+tests (multi-module fixture is the slow bit) 2h; doc-gen + `runIde` smoke 0.5h.
+**~1 day combined.**
 
 ## Open questions / risks
 

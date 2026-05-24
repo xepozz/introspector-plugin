@@ -22,63 +22,58 @@ multi-level tree.
 @McpTool(name = "psi.type_hierarchy")
 @McpDescription("""…verbatim below…""")
 suspend fun psi_type_hierarchy(
-    @McpDescription("FQN. Mutually exclusive with file+offset; takes precedence when both supplied.")
-    target: String? = null,
-    @McpDescription("VFS URL. null → active editor tab. Used when `target` is null.") fileUrl: String? = null,
-    @McpDescription("Document offset on a class decl/ref. Alternative to line+column.") offset: Int? = null,
-    @McpDescription("1-based line.") line: Int? = null,
-    @McpDescription("1-based column.") column: Int? = null,
-    @McpDescription("\"up\" / \"down\" / \"both\" (default).") direction: String = "both",
-    @McpDescription("\"file\" / \"project\" (default) / \"all\" (slow).") scope: String = "project",
-    @McpDescription("Max tree depth from target. Default 5.") maxDepth: Int = 5,
-    @McpDescription("Hard cap on total nodes across supertypes + subtypes. Default 200.") maxNodes: Int = 200,
+    target: String? = null,                 // FQN; takes precedence over position
+    fileUrl: String? = null,                // null → active editor tab
+    offset: Int? = null,                    // OR line+column
+    line: Int? = null, column: Int? = null,
+    direction: String = "both",             // "up" | "down" | "both"
+    scope: String = "project",              // "file" | "project" | "all"
+    maxDepth: Int = 5, maxNodes: Int = 200,
 ): TypeHierarchyResponse
 ```
+Per-parameter `@McpDescription` strings are concise (one line each, matching
+the descriptions in the args table further down).
+
 
 `@McpDescription` (verbatim — trim-margin, the reflection bridge strips margins):
 
 ```
 |Returns the type hierarchy of a class — supertypes (parents) and/or subtypes
-|(implementors / extenders) — as a tree rooted at the target. Mirrors the
-|IntelliJ Hierarchy tool window (Ctrl+H, "Type Hierarchy").
+|(implementors / extenders) — as a tree rooted at the target. Mirrors IntelliJ's
+|Hierarchy tool window (Ctrl+H, "Type Hierarchy").
 |
 |Use this when:
 |  - The agent needs what a class extends / implements ("up").
 |  - The agent needs who extends or implements a class ("down").
 |  - A multi-level tree is more useful than a flat list.
-|  - Sealed-type exhaustiveness check — every direct subtype is included and
-|    the response flags `isSealed`.
+|  - Sealed-type exhaustiveness check — direct subtypes included, `isSealed` flagged.
 |
 |Do NOT use this when:
-|  - You only need concrete implementations of an interface / abstract member —
+|  - You only need concrete impls of an interface / abstract member —
 |    psi.goto_implementation is more focused and returns method signatures.
 |  - You want references / call sites — that is psi.find_usages.
 |
-|Target resolution: pass `target` (FQN, takes precedence) OR a position
-|(fileUrl + offset OR line+column) on a class declaration / reference.
-|Anonymous and local classes are recognised at a position but never surface as
-|subtype nodes (no FQN).
+|Target: pass `target` (FQN, takes precedence) OR a position (fileUrl + offset
+|OR line+column) on a class decl / reference. Anonymous + local classes are
+|recognised at a position but never appear as subtype nodes (no FQN).
 |
-|Scope (default "project"):
-|  - "file"    — subtype walk restricted to one file (rarely useful).
-|  - "project" — project sources only. Standard default.
-|  - "all"     — includes library sources. For java.util.List or marker types
-|                like java.lang.Object the subtype walk can saturate the 10s
-|                read-action timeout. A warning is appended; prefer "project".
+|Scope (default "project"): "file" (rare), "project" (default), "all" (includes
+|library sources — for hot types like java.util.List or java.lang.Object the
+|subtype walk can saturate the 10s read-action timeout; a warning is appended).
 |
-|Caps: maxDepth (5) and maxNodes (200) bound the walk. On a cap, response's
-|`truncated` is set and the cut branch's leaf carries `childrenTruncated=true`.
+|Caps: maxDepth (5) and maxNodes (200) bound the walk. On a cap, `truncated`
+|is set and the cut branch's leaf carries `childrenTruncated=true`.
 |
 |Returns: { target: HierarchyClassRef, supertypes: HierarchyNode?, subtypes:
 |HierarchyNode?, direction, scope, truncated, warnings[] }. Each HierarchyNode
 |has `node` + `children[]` (parents for supertypes, child classes for subtypes).
-|java.lang.Object is included as the supertype root when walking "up" but its
+|java.lang.Object is included as supertype root when walking "up" but its
 |subtype walk is always rejected (would be the world).
 |
 |Examples:
 |  target="com.intellij.openapi.editor.Editor"         — both directions, project
 |  target="java.util.List", direction="up"             — super-interfaces only
-|  fileUrl=null, line=42, column=14, direction="down"  — subtypes of class under caret
+|  fileUrl=null, line=42, column=14, direction="down"  — subtypes under caret
 |  target="com.acme.Sealed", direction="down"          — exhaustive sealed list
 ```
 
@@ -88,12 +83,11 @@ suspend fun psi_type_hierarchy(
 @McpTool(name = "psi.goto_implementation")
 @McpDescription("""…verbatim below…""")
 suspend fun psi_goto_implementation(
-    @McpDescription("VFS URL. null → active editor tab.") fileUrl: String? = null,
-    @McpDescription("Document offset on a method, interface, or abstract class.") offset: Int? = null,
-    @McpDescription("1-based line.") line: Int? = null,
-    @McpDescription("1-based column.") column: Int? = null,
-    @McpDescription("\"file\" / \"project\" (default) / \"all\" (slow).") scope: String = "project",
-    @McpDescription("Hard cap on returned implementations. Default 200.") maxResults: Int = 200,
+    fileUrl: String? = null,            // null → active editor tab
+    offset: Int? = null,                // OR line+column
+    line: Int? = null, column: Int? = null,
+    scope: String = "project",          // "file" | "project" | "all"
+    maxResults: Int = 200,
 ): GotoImplementationResponse
 ```
 
@@ -201,18 +195,16 @@ Validation: `direction` ∈ {up,down,both}; `scope` ∈ {file,project,all};
 | Modifiers | reuse `core/PsiModifiers.kt` | local |
 
 **Kotlin uniformity**: `KtClass` / `KtClassOrObject` / `KtNamedFunction` are
-exposed to all of the above via the platform's light-class adapters
-(`KtLightClass`, `KtLightMethod`) — no Kotlin-plugin link-time dep needed.
-Sealed detection: simple-name probe on `"KtClass"` checking `SEALED_KEYWORD`
-plus `PsiClass.hasModifierProperty("sealed")` for Java 17+ sealed — same
-no-link-time-dep pattern as `PsiUsageSearcher.isLocalVariableLike`.
-
+exposed to all the above via the platform light-class adapters (`KtLightClass`,
+`KtLightMethod`) — no Kotlin-plugin link-time dep. Sealed detection: simple-name
+probe on `"KtClass"` for `SEALED_KEYWORD` plus `PsiClass.hasModifierProperty("sealed")`
+for Java 17+ sealed — same no-link-time-dep pattern as `PsiUsageSearcher.isLocalVariableLike`.
 Position resolution reuses `PsiToolset.resolveFile` / `resolveOffset` and
-`PsiUsageSearcher.resolveTarget`'s follow-reference-or-named-ancestor walk,
-restricted to `PsiClass` (type_hierarchy + class-mode goto_impl) or
-`PsiMethod` (method-mode goto_impl).
+`PsiUsageSearcher.resolveTarget`'s follow-ref-or-named-ancestor walk, restricted
+to `PsiClass` (type_hierarchy + class-mode goto_impl) or `PsiMethod`
+(method-mode goto_impl).
 
-## Threading
+## Threading & timeout
 
 No EDT. Both run inside `readActionBlocking { … }` and wrap each search in
 `DumbService.computeWithAlternativeResolveEnabled<R, RuntimeException> { … }` —
@@ -220,25 +212,16 @@ same as `psi_find_usages`. All `*Search` APIs respect the read-action context
 and check PCE per result, so the 10 s readAction cap propagates cleanly. No
 caching (state-dependent).
 
-## Timeout strategy
-
 Hard 10 s cap (CLAUDE.md). Risky surface: `ClassInheritorsSearch` /
 `DefinitionsScopedSearch` / `OverridingMethodsSearch` on a hot interface in
-`scope="all"` (e.g. `List`, `Object`, `Object.toString()`) can return thousands
-of hits and saturate the budget.
-
-Mitigations baked in:
-- **Default `scope="project"`** (matches IntelliJ Hierarchy default).
-- **Hard caps**: `maxNodes=200` / `maxResults=200`; trip `truncated=true`.
-- **`scope="all"` warning** appended even on success, so the agent learns to
-  narrow on follow-ups.
-- **`java.lang.Object` special-case** for type_hierarchy: subtype walk
-  rejected with warning.
-- **Per-result PCE check** in each `Query.forEach(Processor { … })` — same as
-  `PsiUsageSearcher`. Stop the moment a cap trips.
-
-If a caller genuinely needs more than 10 s, the answer is narrower scope or
-paging — not a higher timeout.
+`scope="all"` (`List`, `Object`, `Object.toString()`) saturates the budget.
+Mitigations: default `scope="project"` (matches IntelliJ Hierarchy default);
+hard caps `maxNodes=200` / `maxResults=200` trip `truncated=true`; `scope="all"`
+appends a warning even on success so the agent learns to narrow on follow-ups;
+`java.lang.Object` subtype walk rejected with warning; per-result PCE check in
+each `Query.forEach(Processor { … })` stops the moment a cap trips. If a caller
+genuinely needs more than 10 s, the answer is narrower scope or paging — not a
+higher timeout.
 
 ## Edge cases
 

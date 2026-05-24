@@ -41,7 +41,7 @@ suspend fun screenshot_highlight(
 ): ImagePayload
 ```
 
-**`@McpDescription` draft** (verbatim — trim-margin form):
+`@McpDescription` verbatim (trim-margin):
 
 ```
 |Captures a screenshot of the IDE (target='component'|'active_frame'|'screen') AND
@@ -78,7 +78,7 @@ suspend fun screenshot_highlight(
 |  componentId="c_a3f2e1b8", target="component", scale=0.5     — component-only, halved
 ```
 
-Response = existing `ImagePayload`. Box geometry not serialized — caller supplied it.
+Response: existing `ImagePayload`. Box geometry not serialized (caller-supplied).
 
 ### `screenshot.diff`
 
@@ -101,7 +101,7 @@ suspend fun screenshot_diff(
 ): ImageDiffPayload
 ```
 
-**`@McpDescription` draft** (verbatim):
+`@McpDescription` verbatim:
 
 ```
 |Pixel-diff two base64-encoded PNGs (typically a 'before' and 'after' from two
@@ -138,7 +138,8 @@ suspend fun screenshot_diff(
 |    baseTransparency=0.2f                                      — yellow on dark
 ```
 
-Response model — new `model/ImageDiffPayload.kt`:
+Response — new `model/ImageDiffPayload.kt` (parallels `ImagePayload`; no
+inheritance — `@Serializable` data classes don't cleanly extend):
 
 ```kotlin
 @Serializable data class BBox(val x: Int, val y: Int, val width: Int, val height: Int)
@@ -152,10 +153,6 @@ data class ImageDiffPayload(
     val bbox: BBox? = null,        // null when differingPixels == 0
 )
 ```
-
-`ImagePayload` unchanged; `ImageDiffPayload` parallels it — no inheritance
-because `@Serializable` data classes don't cleanly extend across the serializer
-boundary.
 
 ## IntelliJ APIs used
 
@@ -183,57 +180,44 @@ worst case. No caching — per-call data.
 
 ## Edge cases
 
-`highlight`:
+`highlight`: (1) **componentId not in registry** — `McpExpectedError("Component
+'$id' is no longer attached")`. (2) **Not displayable** when `target ∈
+{active_frame, screen}` — `getLocationOnScreen()` throws; catch → `McpExpectedError(
+"Component is not currently visible — cannot compute frame/screen coords")`.
+`target=component` works on detached components via `paint()`. (3) **Bounds past
+frame** — clip to image bounds + warn `"component clipped to frame bounds"`;
+draw what's visible. (4) **Zero-area bounds** — draw small marker at origin +
+warn. (5) **`target="all_frames"`** — reject explicitly; hint `active_frame` /
+`screen`. (6) **Color parse fail / label too long / newlines** — fall back to
+red + warn; UTF-8 truncate to 80 chars (existing helper), collapse `\n`/`\r` to
+spaces; place label inside-top of box if clipping the top edge.
 
-1. **componentId not in registry** — `McpExpectedError("Component '$id' is no
-   longer attached")` (matches `capture target=component`).
-2. **Not displayable** when `target ∈ {active_frame, screen}` —
-   `getLocationOnScreen()` throws; catch → `McpExpectedError("Component is not
-   currently visible — cannot compute frame/screen coords")`. `target=component`
-   works on detached components via `paint()`.
-3. **Bounds past frame** (offscreen popup, detached toolwindow) — clip to image
-   bounds + warn `"component clipped to frame bounds"`; draw what's visible.
-4. **Zero-area bounds** — draw small marker at origin + warn.
-5. **`target="all_frames"`** — explicit reject; hint `active_frame` / `screen`.
-6. **Color parse fail / label too long / newlines** — fall back to red + warn;
-   UTF-8 truncate to 80 chars (existing helper), collapse `\n`/`\r` to spaces;
-   place label inside-top of box if clipping the top edge.
-
-`diff`:
-
-7. **Base64 / `ImageIO.read` fail** — `McpExpectedError("'<which>' is not a
-   valid PNG")`.
-8. **Mismatched dimensions** — policy-driven: `resize` (default, HiDPI / window-
-   resize case), `pad` (faithful but inflates diff), `error` (strict).
-9. **AA text jitter** — `tolerance=8` default masks JBR HiDPI subpixel noise;
-   validate in platform smoke (bump to 12 — see open Qs).
-10. **Alpha channel diffed per-channel** — translucent→opaque counts even when
-    RGB matches.
-11. **Identical inputs** — `differingPixels=0`, `bbox=null`,
-    `diffPercentage=0.0`; output is still a valid grayscale-of-after PNG.
-12. **Output exceeds MCP budget** — same `fitWithinBudget` downscale; bbox is
-    reported in the **returned (scaled)** image's coordinates + warn `"output
-    downscaled by N halving passes; bbox is in scaled coordinates"`.
-13. **Non-ARGB decoded type** (e.g. `TYPE_BYTE_INDEXED`) — convert once to
-    `TYPE_INT_ARGB`, then diff via int-array fast path.
+`diff`: (7) **Base64 / `ImageIO.read` fail** — `McpExpectedError("'<which>' is
+not a valid PNG")`. (8) **Mismatched dimensions** — policy-driven: `resize`
+(default, HiDPI / window-resize case), `pad` (faithful but inflates diff),
+`error` (strict). (9) **AA text jitter** — `tolerance=8` default masks JBR HiDPI
+subpixel noise; bump to 12 if platform smoke shows noop > 0.1%. (10) **Alpha
+diffed per-channel** — translucent→opaque counts even when RGB matches.
+(11) **Identical inputs** — `differingPixels=0`, `bbox=null`,
+`diffPercentage=0.0`; output is still a valid grayscale-of-after PNG.
+(12) **Output exceeds MCP budget** — same `fitWithinBudget` downscale; bbox is
+reported in the **returned (scaled)** coords + warn `"output downscaled by N
+halving passes; bbox is in scaled coordinates"`. (13) **Non-ARGB decoded type**
+(e.g. `TYPE_BYTE_INDEXED`) — convert once to `TYPE_INT_ARGB`, diff via int-array
+fast path.
 
 ## Files to create/modify
 
-| Path | Op | What |
-|------|----|------|
-| `tools/ScreenshotToolset.kt` | Edit | Add `screenshot_highlight` + `screenshot_diff` methods; reuse `finalise()` |
-| `core/ScreenshotCapture.kt` | Edit | Add `drawHighlight(base, bounds, color, thickness, label)` — pure, off-EDT |
-| `core/ImageDiffer.kt` | New | Headless `diff(before, after, tolerance, color, baseAlpha, policy): DiffResult` |
-| `model/ImageDiffPayload.kt` | New | `@Serializable` `BBox` + `ImageDiffPayload` |
-| `model/args/ScreenshotArgs.kt` | New | `@Serializable` arg mirrors for tests |
-| `util/ColorParsing.kt` | New | `parseCssColor(raw): Color?` — hex + named-color table |
-| `test/.../core/ImageDifferTest.kt` | New | Diff math / bbox / tolerance / size-mismatch |
-| `test/.../core/ScreenshotHighlightTest.kt` | New | `drawHighlight` synthetic-image pixel assertions |
-| `test/.../util/ColorParsingTest.kt` | New | Table-driven parser tests |
-| `test/.../core/platform/ScreenshotHighlightPlatformTest.kt` | New | Smoke: `BasePlatformTestCase` + JButton + toolset call |
-
-No XML wiring — both tools live in the existing `ScreenshotToolset` already
-registered by `META-INF/mcp-integration.xml`.
+Edits: `tools/ScreenshotToolset.kt` (add both `@McpTool` methods, reuse
+`finalise()`); `core/ScreenshotCapture.kt` (add `drawHighlight(base, bounds,
+color, thickness, label)` — pure, off-EDT). New: `core/ImageDiffer.kt`
+(headless `diff(before, after, tolerance, color, baseAlpha, policy):
+DiffResult`); `model/ImageDiffPayload.kt`; `model/args/ScreenshotArgs.kt` (arg
+mirrors for tests); `util/ColorParsing.kt` (`parseCssColor(raw): Color?` — hex
++ named-color table); tests `core/ImageDifferTest`,
+`core/ScreenshotHighlightTest`, `util/ColorParsingTest`,
+`core/platform/ScreenshotHighlightPlatformTest`. No XML wiring — both tools
+join the existing `ScreenshotToolset` already registered by `META-INF/mcp-integration.xml`.
 
 ## Test plan
 
