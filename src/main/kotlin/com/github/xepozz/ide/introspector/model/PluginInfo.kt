@@ -21,6 +21,8 @@ data class PluginInfo(
     val dependencies: List<PluginDependencyInfo> = emptyList(),
     val declaredExtensionPointsCount: Int = 0,
     val registeredExtensionsCount: Int = 0,
+    val servicesCount: Int = 0,
+    val listenersCount: Int = 0,
 )
 
 @Serializable
@@ -34,5 +36,7 @@ data class PluginDetails(
     val plugin: PluginInfo,
     val declaredExtensionPoints: List<ExtensionPointInfo> = emptyList(),
     val registeredExtensions: List<ExtensionInfo> = emptyList(),
+    val services: List<ServiceInfo> = emptyList(),
+    val listeners: List<ListenerInfo> = emptyList(),
     val actions: List<String> = emptyList(),
 )

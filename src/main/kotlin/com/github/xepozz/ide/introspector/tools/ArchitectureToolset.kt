@@ -186,6 +186,10 @@ class ArchitectureToolset : McpToolset {
         includeDeclaredExtensionPoints: Boolean = true,
         @McpDescription("Include extensions this plugin contributes to other plugins' EPs. Default true.")
         includeRegisteredExtensions: Boolean = true,
+        @McpDescription("Include services declared by this plugin (application/project/module). Default true — cheap.")
+        includeServices: Boolean = true,
+        @McpDescription("Include message-bus listeners declared by this plugin (application/project). Default true — cheap.")
+        includeListeners: Boolean = true,
         @McpDescription("Include the plugin's action ids. Default false — slow on plugins with many actions (com.intellij has ~3000).")
         includeActions: Boolean = false,
     ): PluginDetails {
@@ -196,8 +200,10 @@ class ArchitectureToolset : McpToolset {
             inv.extensionPoints().filter { it.declaredByPluginId == pluginId }
         } else emptyList()
         val extensions = if (includeRegisteredExtensions) inv.extensionsByPlugin(pluginId) else emptyList()
+        val services = if (includeServices) inv.servicesByPlugin(pluginId) else emptyList()
+        val listeners = if (includeListeners) inv.listenersByPlugin(pluginId) else emptyList()
         val actions = if (includeActions) actionsFor(pluginId) else emptyList()
-        return PluginDetails(plugin, declaredEps, extensions, actions)
+        return PluginDetails(plugin, declaredEps, extensions, services, listeners, actions)
     }
 
     @McpTool(name = "arch.find_extenders_of")

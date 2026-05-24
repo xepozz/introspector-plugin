@@ -6,7 +6,7 @@ Generated from the `@McpTool` / `@McpDescription` annotations on the `McpToolset
 classes by a KSP processor (`doc-processor/`) that runs as part of `compileKotlin`.
 To refresh: any `./gradlew build` (or `./gradlew compileKotlin`) regenerates this file.
 
-**Total tools:** 21
+**Total tools:** 25
 
 ## Tools by group
 
@@ -25,6 +25,11 @@ To refresh: any `./gradlew build` (or `./gradlew compileKotlin`) regenerates thi
 - [`code.get_source`](#code-getsource)
 - [`code.list_members`](#code-listmembers)
 
+### `events.*` (2)
+
+- [`events.find_listeners_of_topic`](#events-findlistenersoftopic)
+- [`events.list_listeners`](#events-listlisteners)
+
 ### `exec.*` (1)
 
 - [`exec.execute_kotlin_in_ide`](#exec-executekotlininide)
@@ -40,6 +45,11 @@ To refresh: any `./gradlew build` (or `./gradlew compileKotlin`) regenerates thi
 
 - [`screenshot.capture`](#screenshot-capture)
 - [`screenshot.crop`](#screenshot-crop)
+
+### `services.*` (2)
+
+- [`services.find`](#services-find)
+- [`services.list`](#services-list)
 
 ### `ui.*` (5)
 
@@ -124,6 +134,8 @@ Examples:
 | `pluginId` | `String` | Plugin id, e.g. 'com.intellij.java', 'org.jetbrains.kotlin', 'com.github.xepozz.ide.introspector'. Get ids from arch.list_plugins. |
 | `includeDeclaredExtensionPoints` | `Boolean` | Include EPs this plugin declares (i.e. extensibility hooks it offers to others). Default true. |
 | `includeRegisteredExtensions` | `Boolean` | Include extensions this plugin contributes to other plugins' EPs. Default true. |
+| `includeServices` | `Boolean` | Include services declared by this plugin (application/project/module). Default true — cheap. |
+| `includeListeners` | `Boolean` | Include message-bus listeners declared by this plugin (application/project). Default true — cheap. |
 | `includeActions` | `Boolean` | Include the plugin's action ids. Default false — slow on plugins with many actions (com.intellij has ~3000). |
 
 **Returns:** `PluginDetails`
@@ -404,6 +416,76 @@ Examples:
 | `limit` | `Int` | Cap on returned members. Default 500. |
 
 **Returns:** `ListMembersResponse`
+
+---
+
+## `events.find_listeners_of_topic`
+
+*EventsToolset*
+
+Reverse-lookup: given a Topic FQCN, lists every static listener registered against it.
+
+Use this when: you have a specific topic class (e.g. `com.intellij.openapi.vfs.newvfs.BulkFileListener`)
+and want to know what reacts to its events.
+
+Do NOT use this when: you have a substring (use events.list_listeners with topicContains).
+
+Returns: { listeners: ListenerInfo[], total: int }.
+
+Examples:
+  topicClass="com.intellij.openapi.vfs.newvfs.BulkFileListener"
+  topicClass="com.intellij.openapi.fileEditor.FileEditorManagerListener"
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `topicClass` | `String` | Fully-qualified Topic class name. Use the topicClass values from events.list_listeners. |
+
+**Returns:** `ListListenersResponse`
+
+---
+
+## `events.list_listeners`
+
+*EventsToolset*
+
+Lists IntelliJ message-bus listeners declared statically in plugin.xml via
+`<applicationListeners>` and `<projectListeners>`. These are pairs of (topic class,
+listener class) wired up by the platform on application/project initialization —
+IntelliJ's idiomatic, declarative event-subscription mechanism.
+
+Use this when: you want to find "who reacts to file edits / VCS state / project open?",
+"which listeners does plugin X register?", "what are the application-level listeners
+that fire on startup?". Common starting point for understanding plugin event flow.
+
+Do NOT use this when: you want to know who subscribed *at runtime* via
+`messageBus.connect().subscribe(...)` (out of scope — those subscriptions are
+imperative, not enumerable), or you want the available topic classes themselves (look
+at the topicClass field on the returned listeners, or grep platform sources for
+`Topic<...>`).
+
+Returns: { listeners: ListenerInfo[], total: int } where each ListenerInfo has
+topicClass (FQCN of the Topic), listenerClass (FQCN of the implementation),
+area ('application'|'project'), activeInTestMode, activeInHeadlessMode, os (when
+restricted), providedByPluginId/Name.
+
+Examples:
+  topicContains="FileEditorManager"                              — every listener for FileEditorManager.Listener topics
+  area="project", providedByPlugin="com.github.xepozz.ide.introspector" — this plugin's project listeners
+  listenerContains="StartupActivity"                             — listeners whose impl mentions StartupActivity
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `area` | `String` | 'application', 'project', or 'all'. Default 'all'. |
+| `providedByPlugin` | `String?` | Restrict to listeners contributed by this plugin id. |
+| `topicContains` | `String?` | Case-insensitive substring filter on the topic FQCN. |
+| `listenerContains` | `String?` | Case-insensitive substring filter on the listener implementation FQCN. |
+| `limit` | `Int` | Cap on returned listeners. Default 500. |
+
+**Returns:** `ListListenersResponse`
 
 ---
 
@@ -791,6 +873,83 @@ Examples:
 | `scale` | `Double` | Post-render scale factor applied before encoding. |
 
 **Returns:** `ImagePayload`
+
+---
+
+## `services.find`
+
+*ServicesToolset*
+
+Reverse-lookup for services: given an interface or implementation FQCN, returns every
+ServiceInfo where it matches. Use targetKind="auto" (default) to match either field.
+
+Use this when: you have a specific class in mind and want to know "is this registered
+as a service?", "who provides the implementation of X?", "is interface Y backed by
+multiple impls (via overrides=true)?".
+
+Do NOT use this when: you only have a substring (use services.list with
+interfaceContains/implementationContains).
+
+Returns: { services: ServiceInfo[], total: int }.
+
+Examples:
+  target="com.intellij.openapi.project.ProjectManager"          — every service registered against this interface
+  target="com.intellij.openapi.project.impl.ProjectManagerImpl" — service(s) using this implementation
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `target` | `String` | Fully-qualified class name to search for. Matches interfaceClass and/or implementationClass exactly. |
+| `targetKind` | `String` | 'interface' (match interfaceClass), 'implementation' (match implementationClass), or 'auto' (default — match either). |
+
+**Returns:** `ListServicesResponse`
+
+---
+
+## `services.list`
+
+*ServicesToolset*
+
+Lists IntelliJ services declared in plugin.xml via `<applicationService>` /
+`<projectService>` / `<moduleService>` across every installed plugin. Optionally also
+enumerates `@Service`-annotated light services already instantiated in the running
+IDE session (best-effort, non-deterministic — depends on what's been touched).
+
+Use this when: you want a typed view of plugin services (interface vs implementation,
+preload mode, client/os restrictions, area) — much richer than going through
+arch.list_extensions_for_ep("com.intellij.applicationService"). Common questions:
+"what app-level services does plugin X register?", "what services have preload=TRUE?",
+"is there a service for interface Y?".
+
+Do NOT use this when: you need ALL extensions of any kind (use arch.list_extensions_for_ep
+with a specific EP name), or you want to inspect *components* (deprecated platform
+construct, not exposed by this tool).
+
+Returns: { services: ServiceInfo[], total: int } where each ServiceInfo has
+interfaceClass (optional — null when impl is the service interface), implementationClass
+(canonical FQCN), testServiceImplementation/headlessImplementation (when overridden),
+area ('application'|'project'|'module'), preload ('FALSE'|'TRUE'|'AWAIT'|'NOT_HEADLESS'|
+'NOT_LIGHT_EDIT'), client (ClientKind name when set), os, overrides,
+configurationSchemaKey, providedByPluginId/Name, source ('xml'|'light_instantiated').
+
+Examples:
+  area="application", providedByPlugin="org.jetbrains.kotlin"   — Kotlin's app services
+  implementationContains="ProjectManager"                       — any service implementing/extending ProjectManager
+  includeLightInstantiated=true                                 — also list @Service classes already loaded
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `area` | `String` | 'application' (most common), 'project', 'module', or 'all'. Default 'all'. |
+| `providedByPlugin` | `String?` | Restrict to services contributed by this plugin id (e.g. 'com.intellij', 'org.jetbrains.kotlin'). |
+| `interfaceContains` | `String?` | Case-insensitive substring filter on the declared interface FQCN. |
+| `implementationContains` | `String?` | Case-insensitive substring filter on the implementation FQCN. |
+| `includeLightInstantiated` | `Boolean` | Also include @Service-annotated light services already instantiated in this IDE session. Default false — result is non-deterministic. |
+| `limit` | `Int` | Cap on returned services. Default 500. |
+
+**Returns:** `ListServicesResponse`
 
 ---
 

@@ -56,6 +56,36 @@ class PlatformExplorerTreeModel(
                 }
                 pluginNode.add(group)
             }
+            val services = inventory.servicesByPlugin(p.id)
+            if (services.isNotEmpty()) {
+                val group = DefaultMutableTreeNode(
+                    PlatformExplorerNode.GroupNode("Services", services.size)
+                )
+                services.take(MAX_CHILDREN).forEach { s ->
+                    group.add(DefaultMutableTreeNode(PlatformExplorerNode.ServiceNode(s)))
+                }
+                if (services.size > MAX_CHILDREN) {
+                    group.add(DefaultMutableTreeNode(
+                        PlatformExplorerNode.LoadingNode("… and ${services.size - MAX_CHILDREN} more")
+                    ))
+                }
+                pluginNode.add(group)
+            }
+            val listeners = inventory.listenersByPlugin(p.id)
+            if (listeners.isNotEmpty()) {
+                val group = DefaultMutableTreeNode(
+                    PlatformExplorerNode.GroupNode("Listeners", listeners.size)
+                )
+                listeners.take(MAX_CHILDREN).forEach { l ->
+                    group.add(DefaultMutableTreeNode(PlatformExplorerNode.ListenerNode(l)))
+                }
+                if (listeners.size > MAX_CHILDREN) {
+                    group.add(DefaultMutableTreeNode(
+                        PlatformExplorerNode.LoadingNode("… and ${listeners.size - MAX_CHILDREN} more")
+                    ))
+                }
+                pluginNode.add(group)
+            }
             root.add(pluginNode)
         }
     }

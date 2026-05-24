@@ -76,6 +76,30 @@ class PlatformExplorerCellRenderer : ColoredTreeCellRenderer() {
                     SimpleTextAttributes.GRAY_ATTRIBUTES,
                 )
             }
+            is PlatformExplorerNode.ServiceNode -> {
+                icon = AllIcons.Nodes.Services
+                val s = node.service
+                append(s.implementationClass)
+                append("  ")
+                append("[${s.area}]", SimpleTextAttributes.GRAY_ATTRIBUTES)
+                if (s.preload != "FALSE") {
+                    append("  ")
+                    append("preload=${s.preload}", SimpleTextAttributes.GRAY_ATTRIBUTES)
+                }
+                if (s.source == "light_instantiated") {
+                    append("  ")
+                    append("(@Service)", SimpleTextAttributes.GRAY_ITALIC_ATTRIBUTES)
+                }
+            }
+            is PlatformExplorerNode.ListenerNode -> {
+                icon = AllIcons.General.Inline_edit
+                val l = node.listener
+                append(l.listenerClass)
+                append("  ")
+                append("→ ${l.topicClass.substringAfterLast('.')}", SimpleTextAttributes.GRAY_ATTRIBUTES)
+                append("  ")
+                append("[${l.area}]", SimpleTextAttributes.GRAY_ATTRIBUTES)
+            }
             is PlatformExplorerNode.LoadingNode -> {
                 icon = AllIcons.Process.Step_passive
                 append(node.displayName, SimpleTextAttributes.GRAY_ITALIC_ATTRIBUTES)
