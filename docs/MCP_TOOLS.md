@@ -6,28 +6,43 @@ Generated from the `@McpTool` / `@McpDescription` annotations on the `McpToolset
 classes by a KSP processor (`doc-processor/`) that runs as part of `compileKotlin`.
 To refresh: any `./gradlew build` (or `./gradlew compileKotlin`) regenerates this file.
 
-**Total tools:** 21
+**Total tools:** 32
 
 ## Tools by group
 
-### `arch.*` (5)
+### `arch.*` (7)
 
+- [`arch.check_lock_requirements`](#arch-checklockrequirements)
+- [`arch.check_threading_requirements`](#arch-checkthreadingrequirements)
 - [`arch.find_extenders_of`](#arch-findextendersof)
 - [`arch.get_plugin_details`](#arch-getplugindetails)
 - [`arch.list_extension_points`](#arch-listextensionpoints)
 - [`arch.list_extensions_for_ep`](#arch-listextensionsforep)
 - [`arch.list_plugins`](#arch-listplugins)
 
-### `code.*` (4)
+### `code.*` (6)
 
 - [`code.attach_sources`](#code-attachsources)
 - [`code.find_class`](#code-findclass)
 - [`code.get_source`](#code-getsource)
+- [`code.list_classes_in_module`](#code-listclassesinmodule)
+- [`code.list_classes_in_package`](#code-listclassesinpackage)
 - [`code.list_members`](#code-listmembers)
 
-### `exec.*` (1)
+### `editor.*` (2)
 
+- [`editor.get_state`](#editor-getstate)
+- [`editor.set_caret`](#editor-setcaret)
+
+### `exec.*` (2)
+
+- [`exec.compile_check`](#exec-compilecheck)
 - [`exec.execute_kotlin_in_ide`](#exec-executekotlininide)
+
+### `health.*` (2)
+
+- [`health.indexing_status`](#health-indexingstatus)
+- [`health.memory`](#health-memory)
 
 ### `psi.*` (4)
 
@@ -41,13 +56,114 @@ To refresh: any `./gradlew build` (or `./gradlew compileKotlin`) regenerates thi
 - [`screenshot.capture`](#screenshot-capture)
 - [`screenshot.crop`](#screenshot-crop)
 
-### `ui.*` (5)
+### `ui.*` (7)
 
 - [`ui.find_by_coordinates`](#ui-findbycoordinates)
 - [`ui.find_by_name`](#ui-findbyname)
 - [`ui.find_by_xpath`](#ui-findbyxpath)
 - [`ui.get_properties`](#ui-getproperties)
 - [`ui.get_tree`](#ui-gettree)
+- [`ui.list_dialogs`](#ui-listdialogs)
+- [`ui.list_tool_windows`](#ui-listtoolwindows)
+
+---
+
+## `arch.check_lock_requirements`
+
+*ArchitectureToolset*
+
+Statically verifies that every caller of a method holds the IntelliJ read/write lock
+the method requires. The target's @RequiresReadLock / @RequiresWriteLock /
+@RequiresReadLockAbsence is the contract; each caller is checked by walking to the
+enclosing method/lambda: does it carry the same annotation (transitive), or is it
+lexically inside ReadAction.compute / runReadAction / WriteAction.run / runWriteAction?
+Mirror of DevKit's `find_lock_requirement_usages` — works in IDEs without DevKit.
+
+Use this when: "is foo() always called under a read lock?", "who calls bar() without a
+write action?", or before changing a method's lock contract.
+
+Do NOT use this when: you want runtime/dynamic checks (static — Runnable posted to
+invokeLater is `unknown`, not `ok`), or the target has no annotation (response is
+trivially empty). For "who calls foo()?" without lock analysis use psi.find_usages.
+
+Target: pass `target` as `FQN.method` (overload-ambiguous; every method with that
+simple name is included), OR `fileUrl` + offset / line+column on the method
+declaration — same position semantics as psi.find_usages.
+
+Returns: { target, expected[], callSites[], total, truncated }. CallSiteAnalysis has
+fileUrl, range, callerSignature, callerAnnotations[], contextHints[], status
+('ok'|'mismatch'|'unknown'), reason. `unknown` = we can't reason statically
+(invokeLater, reflection, coroutine builders) — agent should escalate to manual review.
+
+Examples:
+  target="com.intellij.psi.PsiManager.findFile"                          — all callers
+  fileUrl=null, line=42, column=12                                        — method at row 42 in active editor
+  target="com.example.MyService.doStuff", scope="file"                    — same-file only
+  target="com.example.MyService.doStuff", includeImplementations=false    — direct calls only
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `target` | `String?` | FQN.method (e.g. 'com.intellij.psi.PsiManager.findFile'). Mutually exclusive with fileUrl+position. |
+| `fileUrl` | `String?` | VFS URL of the source file containing the target method. Use with offset OR line+column. |
+| `offset` | `Int?` | Document offset on the method's name. Alternative to line+column. |
+| `line` | `Int?` | 1-based line number of the method's name. |
+| `column` | `Int?` | 1-based column number of the method's name. |
+| `scope` | `String` | "project" (default) / "file" / "all" (library sources — slow). |
+| `includeImplementations` | `Boolean` | Also analyse callers of overrides via DefinitionsScopedSearch. Default true. |
+| `maxCallSites` | `Int` | Hard cap on returned call sites. Default 500. |
+
+**Returns:** `CheckRequirementsResponse`
+
+---
+
+## `arch.check_threading_requirements`
+
+*ArchitectureToolset*
+
+Statically verifies that every caller of a method runs on the thread the method
+requires. The target's @RequiresEdt / @RequiresBackgroundThread /
+@RequiresBlockingContext annotation is the contract; each caller is checked by walking
+to the enclosing method/lambda and asking: same annotation (transitive), or lexically
+inside ApplicationManager.invokeLater / SwingUtilities.invokeLater (EDT-pushing) /
+executeOnPooledThread (BGT-pushing)? Mirror of DevKit's
+`find_threading_requirements_usages` — works in IDEs without DevKit loaded.
+
+Use this when: "is foo() always called from a BGT?", "who calls X from the EDT?", or
+before tightening a threading contract.
+
+Do NOT use this when: you want runtime checks (ApplicationManager.isDispatchThread()),
+or the target has no threading annotation (response trivially empty). For callers
+without thread context, use psi.find_usages.
+
+Target: pass `target` as `FQN.method`, OR `fileUrl` + offset / line+column on the
+method's name — same position semantics as psi.find_usages.
+
+Returns: { target, expected[], callSites[], total, truncated }. CallSiteAnalysis
+has callerSignature, callerAnnotations[], contextHints[] (['inside-invokeLater']),
+status ('ok'|'mismatch'|'unknown'), reason. Lambdas in opaque Runnable consumers
+(Future, ExecutorService, kotlinx coroutines) → 'unknown'.
+
+Examples:
+  target="com.intellij.openapi.editor.Editor.getCaretModel"                — @RequiresEdt callers
+  fileUrl="…/MyService.kt", line=20, column=5, scope="file"                — one-file scope
+  target="com.example.Backend.doWork", includeImplementations=false        — direct calls only
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `target` | `String?` | FQN.method (e.g. 'com.intellij.openapi.editor.Editor.getCaretModel'). Mutually exclusive with fileUrl+position. |
+| `fileUrl` | `String?` | VFS URL of the source file containing the target method. Use with offset OR line+column. |
+| `offset` | `Int?` | Document offset on the method's name. Alternative to line+column. |
+| `line` | `Int?` | 1-based line number of the method's name. |
+| `column` | `Int?` | 1-based column number of the method's name. |
+| `scope` | `String` | "project" (default) / "file" / "all" (library sources — slow). |
+| `includeImplementations` | `Boolean` | Also analyse callers of overrides via DefinitionsScopedSearch. Default true. |
+| `maxCallSites` | `Int` | Hard cap on returned call sites. Default 500. |
+
+**Returns:** `CheckRequirementsResponse`
 
 ---
 
@@ -370,6 +486,92 @@ Examples:
 
 ---
 
+## `code.list_classes_in_module`
+
+*CodeSourceToolset*
+
+Enumerates every top-level class in one project module's source roots. Strict,
+structural listing — NOT fuzzy. Companion of JetBrains' search_symbol; use this
+when you know the scope but not the names.
+
+Use this when: agent asks "list all classes in module web-frontend", "what
+classes live under com.acme.billing in module payments-core?", "every annotation
+in module shared". Returns ClassEntry rows ready for code.get_source / code.list_members.
+
+Do NOT use this when:
+  - You want classes by package across all modules — use code.list_classes_in_package.
+  - You want fuzzy / partial-name search — use JetBrains' search_symbol.
+  - You want source text — call code.get_source on each fqn.
+
+Returns: { scope, classes: ClassEntry[], total, truncated, timedOut } where each
+ClassEntry has fqn, simpleName, pkg, kind ('class'|'interface'|'enum'|'record'
+|'annotation'|'kotlinFileFacade'), fileUrl, declarationRange, byteLength. Anonymous
++ inner classes excluded. Kotlin file-level functions surface as 'kotlinFileFacade'.
+
+Examples:
+  moduleName="payments-core"                                   — all production classes
+  moduleName="payments-core", includeTests=true                 — incl. tests
+  moduleName="web-frontend", packagePrefix="com.acme.billing"   — sub-tree
+  moduleName="shared", kinds=["annotation"]                     — annotation surface
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `moduleName` | `String` | Module name (matches JetBrains MCP get_project_modules). |
+| `packagePrefix` | `String?` | Optional package-FQN prefix filter. Null/empty matches all. |
+| `includeTests` | `Boolean` | Include test source roots. Default false. |
+| `includeGenerated` | `Boolean` | Include generated source roots (build/, .gen/, kapt). Default true. |
+| `kinds` | `List<String>` | Allowed kinds: 'class','interface','enum','record','annotation','kotlinFileFacade'. |
+| `limit` | `Int` | Cap on results. Default 1000, hard upper bound 5000. |
+
+**Returns:** `ListClassesResponse`
+
+---
+
+## `code.list_classes_in_package`
+
+*CodeSourceToolset*
+
+Lists all top-level classes in one package FQN, across every module (and optionally
+library jars). Strict-by-package; cross-module counterpart of code.list_classes_in_module.
+
+Use this when: agent asks "what's in com.acme.billing?", "list everything under
+java.util (recursive)?", "annotations in javax.persistence?". Cheap probe before
+code.get_source / code.list_members.
+
+Do NOT use this when:
+  - You want a module scope — use code.list_classes_in_module.
+  - You want fuzzy / partial-name search — use JetBrains' search_symbol.
+  - The package doesn't exist (returns empty, not an error — check `total`).
+
+Returns: { scope, classes: ClassEntry[], total, truncated, timedOut }. Same
+ClassEntry shape as code.list_classes_in_module. Anonymous + inner classes excluded.
+
+Library scope: includeLibraries=false (default) = project sources only. Enabling
+it widens to GlobalSearchScope.allScope and can return tens of thousands of classes
+(rt.jar alone ~30k). Always pair includeLibraries=true with a narrow package and tight limit.
+
+Examples:
+  packageFqn="com.acme.billing"                                  — direct children
+  packageFqn="com.acme.billing", recursive=true                  — whole subtree
+  packageFqn="java.util", includeLibraries=true                  — JDK util top level
+  packageFqn=""                                                  — default/root package
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `packageFqn` | `String` | Fully-qualified package name. '' = default/root package. |
+| `recursive` | `Boolean` | Recurse into sub-packages. Default false. |
+| `includeLibraries` | `Boolean` | Include library jars (rt.jar alone has ~30k classes). Default false — project sources only. |
+| `kinds` | `List<String>` | Allowed kinds: 'class','interface','enum','record','annotation','kotlinFileFacade'. |
+| `limit` | `Int` | Cap on results. Default 500, hard upper bound 5000. |
+
+**Returns:** `ListClassesResponse`
+
+---
+
 ## `code.list_members`
 
 *CodeSourceToolset*
@@ -404,6 +606,181 @@ Examples:
 | `limit` | `Int` | Cap on returned members. Default 500. |
 
 **Returns:** `ListMembersResponse`
+
+---
+
+## `editor.get_state`
+
+*EditorToolset*
+
+Returns the full state of an open editor in one call: primary + secondary carets,
+current selection, visible logical line range, collapsed fold regions, inlay-hint
+counts by kind, and gutter markers (errors/warnings) the daemon has highlighted.
+
+Use this when:
+  - You need a snapshot of "what the user sees": viewport, caret, selection,
+    visible errors — without a screenshot.
+  - You're verifying a UI flow ("did my set_caret take? gutter marker present?")
+    and want a structured assertion.
+  - You want a quick count of errors / warnings before deciding whether to call
+    psi.find_usages or read more code.
+
+Do NOT use this when:
+  - The file isn't open — fails fast like `editor.set_caret`.
+  - You need PSI structure — call psi.get_structure.
+  - You need a pixel-accurate snapshot — call screenshot.capture.
+
+Tunable (heavy sections are opt-in/opt-out):
+  - `includeMultipleCarets=true` (default) — enumerates secondary carets.
+  - `includeFolding=true` (default) — collapsed regions and placeholders.
+  - `includeInlays=false` (default) — inlay enumeration can saturate the EDT;
+    only COUNTS by kind are returned even when on.
+  - `gutterMinSeverity="WARNING"` (default) — one of
+    ERROR / WARNING / WEAK_WARNING / INFO / ALL.
+
+Daemon timing: gutter markers come from `DaemonCodeAnalyzerImpl.getHighlights` and
+only contain what the daemon has finished computing. On a just-opened file the
+list may be empty; rerun after a short delay or call psi.* for structural issues.
+
+Returns: rich `EditorState` — see plan doc for the data class shape.
+
+Examples:
+  fileUrl=null                                   — full state of the active tab
+  fileUrl="file:///…/Foo.kt", includeInlays=true — also include inlay counts
+  gutterMinSeverity="ERROR"                      — only errors in the gutter list
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `fileUrl` | `String?` | VFS URL of the file. null → active editor tab. |
+| `includeMultipleCarets` | `Boolean` | Enumerate secondary carets in `carets[]`. Default true. |
+| `includeFolding` | `Boolean` | Include `foldedRanges[]` (collapsed regions). Default true. |
+| `includeInlays` | `Boolean` | Include `inlayCounts` (count by kind). Default false; can be expensive on large files. |
+| `gutterMinSeverity` | `String` | Minimum daemon severity to include in `gutterMarkers[]`. One of ERROR / WARNING / WEAK_WARNING / INFO / ALL. Default WARNING. |
+
+**Returns:** `EditorState`
+
+---
+
+## `editor.set_caret`
+
+*EditorToolset*
+
+Moves the primary caret to a target position in an open editor and (by default)
+scrolls it into view. Returns the previous offset so the caller can restore it.
+
+Use this when:
+  - You're about to call psi.get_references / psi.find_usages with scope="at_offset"
+    and want the IDE's caret to match the position you're querying.
+  - You need to position the caret before invoking a context-sensitive action
+    (Goto Declaration, Show Intentions) through ui.invoke_action_on.
+  - You want to lead the user's eye to a specific line you just analyzed.
+
+Do NOT use this when:
+  - The file isn't open — fails fast with "file not open". Call JetBrains'
+    `open_file_in_editor` first, then `editor.set_caret`.
+  - You want to select a range — this only moves the primary caret.
+  - You only need to read where the caret IS — call `editor.get_state`.
+
+Positioning: pass either `offset` (0-based, like psi.*) or `line`+`column`
+(both 1-based). If both supplied, `offset` wins. Out-of-range positions are
+clamped to file end and `clamped=true` is set in the response.
+
+Split view: targets `FileEditorManager.selectedTextEditor` for that file — the
+most recently focused split. Per-split targeting is v2.
+
+Returns: { ok, fileUrl, oldOffset, newOffset, line, column, madeVisible, clamped }.
+Save `oldOffset` to undo with a second `editor.set_caret` call.
+
+Examples:
+  fileUrl=null, line=42, column=8        — active tab, row 42 col 8
+  fileUrl="file:///…/Foo.kt", offset=1024 — explicit file + byte offset
+  line=42, scrollToVisible=false         — move but don't scroll
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `fileUrl` | `String?` | VFS URL of the file (from psi.list_open_files.url). null → active editor tab. |
+| `offset` | `Int?` | 0-based document offset. Alternative to line+column. Wins if both supplied. |
+| `line` | `Int?` | 1-based line number. Used when `offset` is null. |
+| `column` | `Int` | 1-based column number. Used with `line`. Default 1. |
+| `scrollToVisible` | `Boolean` | Scroll the editor so the caret is visible (ScrollType.MAKE_VISIBLE). Default true. |
+
+**Returns:** `SetCaretResponse`
+
+---
+
+## `exec.compile_check`
+
+*ExecToolset*
+
+Compiles a Kotlin snippet in-process and returns every compiler diagnostic
+(errors, warnings, info) with line/column positions. NOTHING IS EXECUTED — no
+side effects, no confirmation dialog, no audit log entry.
+
+Use this when:
+ - You generated a Kotlin snippet and want to verify it compiles BEFORE
+   asking the user to apply it (or before invoking exec.execute_kotlin_in_ide).
+ - You want a fast syntax / type-check on a snippet without spinning up a
+   full Gradle build (use JetBrains' build_project for whole-project rebuilds).
+ - You want to iterate "fix the next compile error" without running anything.
+
+Do NOT use this when:
+ - You actually want the side effects — use exec.execute_kotlin_in_ide.
+ - You want to compile a multi-file change against project sources — JSR-223
+   is single-script only; use the IDE's full build via JetBrains' build_project.
+ - You want lint/style checks beyond the compiler's own diagnostics — this
+   tool only surfaces what the Kotlin compiler itself reports.
+
+Always-on: NOT gated by the 'Allow Kotlin code execution' setting and does
+NOT trigger the modal confirmation dialog. Compile is read-only. It does
+require the org.jetbrains.kotlin plugin (same prerequisite as
+exec.execute_kotlin_in_ide); on IDEs without it, the tool isn't registered.
+
+WRAPPING (wrap=true, default): the snippet is embedded in the same template
+execute_kotlin_in_ide uses, so implicit bindings resolve at compile time:
+ - project: Project?
+ - pluginDisposable: Disposable
+ - read { } / write { } / onEdt { } helpers
+This guarantees that "compiles here" implies "compiles under exec.execute_*".
+wrap=false: the input is compiled as a raw top-level .kts script — use this
+to lint a self-contained file that already has its own imports.
+
+Diagnostic line/column with wrap=true refer to the WRAPPED script (the
+wrapper prepends ~20 lines of imports + helper declarations). Raw line
+numbers are surfaced as-is in v1; subtract the wrapper offset client-side
+if you need user-snippet coordinates.
+
+Returns: {
+  ok: Boolean,                          // true iff zero ERROR/FATAL diagnostics
+  diagnostics: [{
+    severity: "FATAL" | "ERROR" | "WARNING" | "INFO" | "DEBUG",
+    line: Int?, column: Int?,           // 1-based; null if no position
+    file: String?,                      // synthetic name of the wrapped script
+    message: String,
+    factoryId: String?                  // diagnostic code; may be null
+  }],
+  warnings: [String],                   // tool-side warnings (e.g. "timed out")
+  durationMs: Long
+}
+
+Examples:
+  // Verify a generated snippet compiles before running it:
+  exec.compile_check code="read { com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project!!).openFiles.map { it.path } }"
+
+  // Lint a self-contained file with its own imports:
+  exec.compile_check code="import kotlin.math.*; val x: Int = sqrt(4.0).toInt()" wrap=false
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `code` | `String` | Kotlin source to compile. Same shape as exec.execute_kotlin_in_ide.code when wrap=true. |
+| `wrap` | `Boolean` | If true (default), wrap in the SAME Plugin-class template execute_kotlin_in_ide uses, so 'project', 'pluginDisposable', and read/write/onEdt helpers resolve. If false, compile as a raw top-level .kts script. |
+
+**Returns:** `CompileCheckResponse`
 
 ---
 
@@ -482,6 +859,89 @@ Examples:
 | `runOn` | `String` | 'edt' (default — wrap on EDT, required for Swing access) or 'background' (don't bounce; for PSI reads etc. wrap with read{} yourself). |
 
 **Returns:** `ExecuteKotlinResponse`
+
+---
+
+## `health.indexing_status`
+
+*HealthToolset*
+
+Reports whether the IDE is currently indexing files or in "dumb mode", per open project.
+
+Use this when:
+ - About to call any `psi.*`, `arch.*`, or `code.*` tool and you want to avoid
+   `IndexNotReadyException` / multi-minute stalls.
+ - Debugging why a previous index-dependent call returned an empty / partial result.
+ - Polling for "indexing finished" before kicking off a batch of PSI queries.
+
+Do NOT use this when:
+ - You just want JVM memory — use `health.memory`.
+ - You need per-file index state — this is project-level only.
+ - You want to *trigger* indexing — this tool is read-only.
+
+Returns: {
+  dumbMode: Boolean,            // true if ANY open project is in dumb mode
+  isStartupComplete: Boolean,   // true once every open project finished post-startup
+  currentTask: String?,         // human-readable current dumb-mode task, if any
+  queuedTasks: Int,             // dumb-mode tasks queued behind the current one
+  projectsIndexing: [{ projectName, projectHash, dumbModeActive,
+                       indexingActive, scanningActive, currentTask? }]
+}
+
+Examples:
+  health.indexing_status                                # all open projects
+  health.indexing_status projectHash="a1b2c3"           # one project
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `projectHash` | `String?` | Optional project locationHash filter; omit to report all open projects. |
+
+**Returns:** `IndexingStatus`
+
+---
+
+## `health.memory`
+
+*HealthToolset*
+
+Reports JVM memory + a few IDE-specific counters from `java.lang.management` MXBeans.
+
+Use this when:
+ - You suspect the IDE is near-OOM (slow response, freezes, GC thrashing).
+ - You want a baseline before a heavy operation (`screenshot.capture`, large
+   `psi.get_tree`, `exec.execute_kotlin_in_ide`).
+ - Diagnosing a memory-leak report from a user.
+
+Do NOT use this when:
+ - You want per-object retention — use a real profiler (YourKit / JFR / VisualVM).
+ - You need indexing state — use `health.indexing_status`.
+ - `gcBeforeRead=true` looks like a fix — `System.gc()` is a HINT to the JVM
+   and may do nothing. Never rely on it to "free" memory.
+
+Returns: {
+  heap:      { used, max, committed, freeBytes },           // bytes
+  metaspace: { used, max },                                 // bytes; max may be -1 (unbounded)
+  nonHeap:   { used, max },                                 // bytes
+  threadCount: Int,
+  classCount:  Int,
+  gcs: [{ name, collectionCount, collectionTimeMs }],       // per-GC counters since JVM start
+  uptime:          Long,                                    // ms since JVM start
+  uptimeFormatted: String                                   // e.g. "1h 12m 03s"
+}
+
+Examples:
+  health.memory                            # cheap snapshot
+  health.memory gcBeforeRead=true          # rare; intrusive
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `gcBeforeRead` | `Boolean` | If true, call System.gc() once before sampling. GC is a HINT — heap may not shrink. Default false. |
+
+**Returns:** `MemorySnapshot`
 
 ---
 
@@ -994,6 +1454,82 @@ Examples:
 | `truncatePropertyValueAt` | `Int` | Maximum character length for any single property value before truncation. |
 
 **Returns:** `UiTreeResponse`
+
+---
+
+## `ui.list_dialogs`
+
+*UiInspectorToolset*
+
+Lists currently-open `JDialog` / `java.awt.Dialog` windows across the JVM —
+both modal and modeless. Each entry: title, ComponentRegistry id (reusable with
+`ui.get_tree` / `ui.get_properties` / `screenshot.capture`), bounds, modality,
+resizable flag, and the FQN of the dialog's content class (typically a
+`DialogWrapper` subclass for IntelliJ dialogs).
+
+Use this when: you need to know IF a dialog is up before deciding what to do
+next — e.g. before invoking an action, confirm no blocking modal is in the way.
+Complements `ui.get_tree` (returns one dialog's tree) — call `ui.list_dialogs`
+first to discover ids.
+
+Do NOT use this when: you want regular IDE frames (use `ui.find_by_xpath` with
+`//IdeFrameImpl`), popups (`JBPopup` / heavyweight popup menus), or notifications
+(live in tool windows / balloons).
+
+Returns: { dialogs: DialogInfo[], warnings: string[] }. `title` may be null.
+`contentClass` resolves the `DialogWrapper` peer via
+`DialogWrapper.findInstance(component)` when possible, else falls back to the
+dialog's own `getClass().name`.
+
+Examples:
+  (no args)                  — every showing dialog (modal + modeless)
+  includeInvisible=true      — include dialogs that exist but aren't showing
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `includeInvisible` | `Boolean` | Include Dialogs that exist but aren't showing (isShowing==false). Default false. |
+
+**Returns:** `<ERROR TYPE: DialogsResponse>`
+
+---
+
+## `ui.list_tool_windows`
+
+*UiInspectorToolset*
+
+Returns a semantic inventory of every registered tool window in the focused
+project — NOT a Swing component tree. Each entry: id, displayName, anchor
+(LEFT/RIGHT/BOTTOM/TOP), visibility, active/focused flag, split-mode flag,
+type (DOCKED/FLOATING/SLIDING/WINDOWED), iconPath, content-tab count, and the
+pluginId that contributed it (cross-referenced from our `arch.*` inventory via
+the `com.intellij.toolWindow` extension point).
+
+Use this when: you need to know WHICH tool windows exist before focusing,
+capturing, or drilling into one. Typical first call for "open the Database tool
+window" or "what's in the Problems view".
+
+Do NOT use this when: you need the inner Swing tree of a specific tool window —
+use `ui.get_tree` with `rootSelector="tool_window:<id>"`.
+
+Returns: { toolWindows: ToolWindowInfo[], project: string?, warnings: string[] }.
+`iconPath` is a best-effort toString — may be null for procedural icons.
+`providedByPluginId` is null when the window was registered programmatically.
+
+Examples:
+  (no args)                  — every tool window, visible + hidden
+  includeInvisible=false     — only currently shown
+  nameContains="Problems"    — substring filter on id or displayName
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `includeInvisible` | `Boolean` | Include tool windows that are currently hidden. Default true. |
+| `nameContains` | `String?` | Case-insensitive substring filter on id OR displayName. Null = no filter. |
+
+**Returns:** `<ERROR TYPE: ToolWindowsResponse>`
 
 ---
 

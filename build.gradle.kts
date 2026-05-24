@@ -115,6 +115,51 @@ tasks.withType<Test>().configureEach {
     systemProperty("java.awt.headless", "true")
 }
 
+// ---------------------------------------------------------------------------
+// `testScripting` — isolated source set for KotlinCompileOnly tests that NEED
+// kotlin-scripting-jsr223 + kotlin-compiler-embeddable on the runtime classpath.
+// Putting these in the standard `test` source set is impossible: the main
+// `test` task explicitly excludes the scripting stack (see `testRuntimeClasspath`
+// above) because kotlin-compiler-embeddable bundles older IntelliJ Platform
+// resources (`messages/JavaPsiBundle.properties`, upstream coroutines …) that
+// shadow the IDE's modern copies and break BasePlatformTestCase setUp.
+//
+// `testScripting` is pure JVM — no IntelliJ test framework, no
+// BasePlatformTestCase — so we can keep the scripting deps on its classpath
+// without poisoning the IDE-platform tests.
+// ---------------------------------------------------------------------------
+val testScripting by sourceSets.creating {
+    compileClasspath += sourceSets.main.get().output
+    runtimeClasspath += sourceSets.main.get().output
+}
+
+configurations[testScripting.implementationConfigurationName]
+    .extendsFrom(configurations.testImplementation.get())
+configurations[testScripting.runtimeOnlyConfigurationName]
+    .extendsFrom(configurations.testRuntimeOnly.get())
+
+dependencies {
+    add(testScripting.implementationConfigurationName, "junit:junit:4.13.2")
+    // Pin coroutines to a version compatible with the Kotlin 2.1.20 stdlib we compile against;
+    // newer coroutines (1.10.x) pull in stdlib 2.3.x, which breaks KSP's metadata reader.
+    add(testScripting.implementationConfigurationName, "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
+    // The whole point of this source set: keep scripting on the runtime classpath.
+    add(testScripting.runtimeOnlyConfigurationName, "org.jetbrains.kotlin:kotlin-scripting-jsr223:2.1.20")
+}
+
+val testScriptingTask = tasks.register<Test>("testScripting") {
+    description = "Runs the compile-only tests that require kotlin-scripting on the classpath."
+    group = "verification"
+    testClassesDirs = testScripting.output.classesDirs
+    classpath = testScripting.runtimeClasspath
+    useJUnit()
+    systemProperty("java.awt.headless", "true")
+}
+
+tasks.named("check") {
+    dependsOn(testScriptingTask)
+}
+
 // Tell the KSP processor where to write the markdown reference. KSP runs as part of
 // compileKotlin so every `./gradlew build` (and `./gradlew buildPlugin`) refreshes the file.
 ksp {
