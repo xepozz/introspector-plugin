@@ -117,62 +117,23 @@ below are MEDIUM (documentation/regression-net) — neither blocks merge.
    class metadata, not its static initialisers — same safety stance
    as the platform's own lazy resolve. ✅
 
-8. **[LOW] `resolveExtensionClass` plugin-classloader fallback can
-   leak through to the application classloader when the EP belongs
-   to a disabled plugin.** `Class.forName(fqn, false,
-   pluginClassLoader)` first; on `Throwable` falls through to
-   `Class.forName(fqn, false, ExtensionPointInspector::class.java.classLoader)`.
-   Mostly fine because the application classloader can see most
-   platform bean classes. Edge case: if a plugin-supplied bean shares
-   a simple name with a platform class on a different ClassLoader,
-   the fallback returns the *wrong* class. Unlikely in practice
-   (bean classes are typically `com.intellij.*` or
-   `com.example.myplugin.*` — namespaced). No fix required; flagging
-   for the record.
-
 ### Bean schema (`harvestBeanSchema`)
 
-9. **[OK] Walks superclass hierarchy, dedupes by field name, caps at
+8. **[OK] Walks superclass hierarchy, dedupes by field name, caps at
    maxFields, sets `truncated=true` when cap hits.** Matches plan
-   §"Reflection pattern for bean schema". The `seen.add(f.name)`
-   guard correctly hides Kotlin's `$$delegate_*` synthetic fields
-   (which themselves are filtered by `f.isSynthetic`).
+   §"Reflection pattern for bean schema". `seen.add(f.name)` hides
+   Kotlin synthetic shadows (which `f.isSynthetic` also filters).
 
-10. **[OK] Public unannotated fields included with `xmlAttributeName
-    = f.name`, private unannotated skipped.** Mirrors XmlSerializer
-    exactly. The `Modifier.isPublic(f.modifiers)` check at line 397
-    is the right gate. Test case
-    `harvestBeanSchema skips private unannotated fields and static fields`
-    confirms.
+9. **[OK] Public unannotated → `xmlAttributeName = f.name`, private
+   unannotated skipped, `@Tag` nests (clears `xmlAttribute`),
+   `@Property(style=TAG/ATTRIBUTE)` switched correctly, `@Deprecated`
+   (Java + Kotlin via `isPropertyDeprecated`) detected.** All
+   covered by tests. `kotlin-reflect` last-resort in
+   `isPropertyDeprecated` is `try/catch`-gated. `@Property` without
+   `style` is untested — acknowledged via `keepPropertyImportReachable`
+   at line 215.
 
-11. **[OK] `@Tag` nests, clears `xmlAttribute`.** Line 384:
-    `xmlAttribute = null` when `tagAnn != null`. The `nested` field
-    test (`harvestBeanSchema renders @Tag as nested-element entry`)
-    locks this in.
-
-12. **[OK] `@Property(style=TAG/ATTRIBUTE)` reflection.** Reads the
-    enum member by name and switches. No test covers this branch
-    (acknowledged via `keepPropertyImportReachable` at line 215),
-    but the logic is straightforward — `@Property` without `style`
-    correctly falls through to the default attribute path.
-
-13. **[OK] `@Deprecated` (Kotlin or Java) detection is over-engineered
-    but correct.** `isPropertyDeprecated` walks `getX` / `isX` / `setX`
-    / `x$annotations` candidates and finally falls back to
-    `cls.kotlin.members`. The `kotlin-reflect` last-resort is gated by
-    `try/catch` — won't crash if `kotlin-reflect` is missing at
-    runtime. Comment block at lines 461-466 documents the rationale.
-
-14. **[LOW] `BeanField.type = f.type.name` doesn't unwrap generics.**
-    The plan calls this out as the intended choice ("record raw
-    `f.type.name`; generic info isn't needed for XML schema"), and
-    the kdoc on `BeanField` says "raw type (no generics)" — matches.
-    Only flagging because finding 2 conflicts with finding 14's
-    reading: if you fix finding 2 to use `simpleName`, the kdoc
-    needs an update too. Pick one of (a) FQN like `java.lang.String`,
-    (b) simple name like `String` — but don't mix.
-
-15. **[LOW] `@Attribute` with no explicit `value()` is untested.**
+10. **[LOW] `@Attribute` with no explicit `value()` is untested.**
     The unit suite covers `@Attribute("id")` (explicit value) and
     `@JvmField var plainPublic` (no annotation at all). It does not
     cover the very common case `@Attribute @JvmField var anchor:
@@ -186,145 +147,84 @@ below are MEDIUM (documentation/regression-net) — neither blocks merge.
 
 ### Interface methods (`harvestInterfaceMethods`)
 
-16. **[OK] Filters to abstract, skips Object overrides + bridge/
+11. **[OK] Filters to abstract, skips Object overrides + bridge/
     synthetic, dedupes by `name+signature`, sorts by name.** Matches
-    plan §"Interface methods" exactly. The `m.declaringClass ==
-    Any::class.java` check at line 423 is correct — `cls.methods`
-    returns the full inherited set, so we need to filter Object.
+    plan §"Interface methods". `returnType` uses `simpleName` —
+    consistent within MethodSig, inconsistent with BeanField.type
+    (see finding 2).
 
-17. **[OK] `MethodSig.returnType = m.returnType.simpleName`.** Uses
-    simple name (consistent within MethodSig, inconsistent with
-    BeanField.type — see finding 2).
+12. **[LOW] `@ApiStatus.Internal` methods are NOT filtered.** Plan
+    §6 only excludes the *interface* from filtering; doesn't say
+    anything about methods. A one-line filter on
+    `org.jetbrains.annotations.ApiStatus.Internal` would stop agents
+    from suggesting that contributors implement methods JetBrains
+    intends to remove. Optional / v2.
 
-18. **[LOW] `@ApiStatus.Internal` is NOT filtered out.** Plan §6
-    edge case asks: "INTERFACE EP whose interface is
-    @ApiStatus.Internal or an inner class — still reflectable; don't
-    filter out (caller asked by name)." Confirmed — no filter. Good.
-    But the plan also doesn't say to filter *methods* annotated
-    `@ApiStatus.Internal`. Worth a one-line filter (`findAnnotation(m,
-    "org.jetbrains.annotations.ApiStatus.Internal") == null`) so an
-    agent generating an EP implementation doesn't write code against
-    methods JetBrains intends to remove. Optional / v2.
+### Tool wiring, threading, `@McpDescription`
 
-### Tool wiring & `@McpDescription`
+13. **[OK] Tool method at `ArchitectureToolset.kt:161-178` is pure
+    delegation, no EDT bounce, no `requireProject()` (correct — EPs
+    live on the application area too).** `@McpDescription` follows
+    the 5-section template; examples cover all three regimes (bean
+    schema, bean+count, interface methods); Returns section fully
+    types the JSON shape. Only nit: line 151 says `@Attribute(name=…)`
+    but the annotation only defines `value()` — cosmetic, matches
+    the plan's prose.
 
-19. **[OK] Tool method is pure delegation.**
-    `ArchitectureToolset.kt:161-178` — straight pass-through to
-    `ExtensionPointInspector.getDetails`. No EDT bounce (correct —
-    `arch.*` doesn't need one). No `requireProject()` call (correct
-    — EPs live on the application area too).
-
-20. **[OK] `@McpDescription` follows the 5-section template.** What
-    / Use when / Do NOT use / Returns / Examples — all present and
-    runnable. The examples cover all three regimes (BEAN_CLASS with
-    schema, BEAN_CLASS with count, INTERFACE with methods). Returns
-    section fully types the JSON shape including optional fields.
-
-21. **[LOW] Docstring at line 151 says `@Attribute(name=…)` but the
-    annotation only defines `value()`.** Cosmetic. Aligns with the
-    plan's prose (which makes the same slip). Recommend "the
-    @Attribute("foo") override" or "@Attribute value override".
-
-### Threading & caching
-
-22. **[OK] No EDT bounce, no `withTimeoutOrNull`, no cache.** Plan
-    §"Threading & EDT model" justified all three. Reflection on a
-    single class hierarchy is sub-100 ms — well under the 10 s cap.
-    `runCatching` wraps both harvest calls (`getDetails:270-275`) so
-    a broken third-party bean degrades to a partial response rather
-    than an exception. ✅
+14. **[OK] `runCatching` wraps both harvest calls
+    (`getDetails:270-275`) — broken third-party bean degrades to
+    partial response, never an exception. Sub-100 ms reflection is
+    well under the 10 s cap; no `withTimeoutOrNull` needed.**
 
 ### Test coverage
 
-23. **[OK] Unit tests cover the schema-side decision matrix:** explicit
-    `@Attribute("id")` rename, `@JvmField` public-only path, private
-    skip, static skip, `@Tag` nesting, `@Deprecated`, maxFields
-    truncation, superclass walk, `className` equality. 12 tests + 4
-    interface-method tests — comprehensive for the bean-side. Fills
-    plan §"Test plan / Unit" exactly.
+15. **[OK] Unit tests (12 schema + 4 interface) cover the decision
+    matrix: explicit `@Attribute` rename, public-only/private-skip/
+    static-skip, `@Tag` nesting, `@Deprecated`, maxFields truncation,
+    superclass walk, `className` equality. Fills plan §"Test plan /
+    Unit" exactly.** The `@JvmField` strategy on every fixture
+    side-steps the Kotlin-annotation-on-getter wart cleanly.
 
-24. **[OK] Platform test pivots from a single brittle EP to a
-    candidate list.** `testInterfaceExtensionPointReturnsInterfaceMethods`
+16. **[OK] Platform test correctly pivots to a candidate list per
+    fixer note.** `testInterfaceExtensionPointReturnsInterfaceMethods`
     iterates `["com.intellij.errorHandler", "com.intellij.statusBarWidgetFactory",
     "com.intellij.applicationService", "com.intellij.codeInsight.
-    lineMarkerProvider"]` and returns on the first that resolves as
-    INTERFACE with at least one abstract method. The
-    `assumeTrue(checkedAny)` path correctly skips rather than fails
-    when none match — exactly the right shape per the fixer note.
-    The ToolWindowEP test uses a `⊇` subset check (`for (expected
-    in listOf("id", "anchor", "factoryClass"))`) — survives the
-    platform adding new fields. Both shapes match the plan §"Test plan
-    / Platform" intent.
+    lineMarkerProvider"]` and returns on first match. Of those,
+    `com.intellij.codeInsight.lineMarkerProvider` is INTERFACE
+    (`LineMarkerProvider` is the interface) AND universally
+    registered in any IDE that ships the platform-impl module —
+    so coverage is real, not theoretical. `com.intellij.toolWindow`
+    is correctly absent from the list (it's BEAN_CLASS via
+    `ToolWindowEP`, not the interface). The `assumeTrue(checkedAny)`
+    skip path is a safety net, not an unreachable branch.
 
-25. **[LOW] Candidate list in `testInterfaceExtensionPointReturnsInterfaceMethods`
-    skips `com.intellij.toolWindow` even though that's the
-    canonical INTERFACE-ish example.** `com.intellij.toolWindow` is
-    BEAN_CLASS (it's `ToolWindowEP`, not `ToolWindowFactory`), so the
-    candidate list does the right thing. But the test name "INTERFACE
-    EP returns interface methods" combined with the candidate list
-    that doesn't *guarantee* any candidate is registered (`assumeTrue`
-    skip path) means CI could quietly produce zero coverage of the
-    INTERFACE branch on some platform builds. Strengthen by adding
-    a more universally-registered INTERFACE EP candidate at the
-    front of the list:
-    - `com.intellij.fileTypeFactory` (deprecated but still registered
-      on most builds)
-    - `com.intellij.iconMapper`
-    - `com.intellij.projectService` is NOT an EP — services aren't
-      reachable via `ExtensionPointInspector.getDetails`. Skip.
-    Or commit to one of the existing candidates with a hard
-    `assertNotNull` and document "if this skips, file an issue".
-    Currently the test passes with zero assertions if all candidates
-    miss.
+17. **[LOW] The candidate-list test produces zero coverage of the
+    INTERFACE branch on the (unlikely) platform build where all
+    four candidates miss.** `assumeTrue(false)` skips quietly —
+    silent CI green with no INTERFACE assertion. Strengthen by
+    upgrading the safety net to a hard `fail("None of $candidates
+    were registered — please update the candidate list")`. The
+    candidate list is curated; if it stops matching anything we want
+    a loud signal.
 
-26. **[OK] `testIncludeRegisteredCountMatchesAdapterCount` /
-    `testIncludeRegisteredCountDefaultsToNull` lock down the
-    `ep.size()` path AND assert it's NOT populated when opted out.**
-    Good — exactly the kind of nullable-flag verification that catches
-    a careless future refactor that always populates the field.
-
-27. **[OK] Unknown-EP path returns null.**
-    `testUnknownEpReturnsNullInsteadOfThrowing` — present, asserts
-    `assertNull`. Matches plan §"Edge cases" #1.
+18. **[OK] `testIncludeRegisteredCountMatchesAdapterCount` /
+    `testIncludeRegisteredCountDefaultsToNull` lock down `ep.size()`
+    AND the nullable-flag default. `testUnknownEpReturnsNullInsteadOfThrowing`
+    locks the graceful-null contract.**
 
 ### Plan-vs-impl gaps
 
-28. **`maxFields` parameter applies to bean fields AND interface
-    methods (one cap, two side-by-side branches).** Plan §"Signature"
-    docstring says "Hard cap on bean fields / interface methods
-    returned (per side)". The kind+include flags mean only one side
-    is ever populated, so the "per side" wording is slightly
-    misleading — there's no scenario where both are non-null. Cosmetic.
+19. **`maxFields` "per side" wording is slightly misleading** — only
+    one side is ever populated per response (kind decides). Cosmetic.
 
-29. **The plan promises a `BeanSchema.truncated = true` set when the
-    `extensionClass` is unresolvable — but a totally-unresolvable
-    class today produces `beanSchema = null` (because `cls = null`
-    skips the harvest entirely), not `BeanSchema(_, [], truncated =
-    true)`.** Plan edge case 8: "`extensionClass` unresolvable
-    (broken plugin / classloader miss) — catch, omit `beanSchema`/
-    `interfaceMethods`, keep descriptor populated." Confirmed —
-    impl returns the descriptor without `beanSchema`. So no plan
-    violation, just verifying the cited path.
+20. **`area` correctly prefers application** (`locateEpWithArea` —
+    app loop first, project loop second). Plan §"Edge cases" #10
+    satisfied.
 
-30. **`area` always returns the FIRST area that registered the EP**
-    (`locateEpWithArea` — app first, then loop open projects).
-    Plan §"Edge cases" #10: "Same name in both app and project area
-    — prefer application; record `area`." Confirmed: app loop runs
-    first, project loop only fires if app missed.
-
-### Cross-cutting
-
-31. **[INFO] No equivalent of `arch.list_extensions_for_ep` integration.**
-    A natural follow-up — `getDetails` does not return any extension
-    list. Plan explicitly punts this to a follow-up (`arch.list_
-    extensions_for_ep` already exists and is a one-call combo). No
-    action.
-
-32. **[INFO] `interfaceOrBeanClass` is non-nullable, populated with
-    `"?"` when unresolvable.** Matches the existing `ExtensionPointInfo`
-    contract — consistent. An agent that wants "did the class
-    resolve?" has to test for `"?"`. Acceptable; flagging only
-    because the JSON shape uses an in-band sentinel.
+21. **[INFO] `interfaceOrBeanClass` uses `"?"` as an in-band
+    sentinel when unresolvable.** Matches `ExtensionPointInfo`
+    convention. Agents that want to detect resolve-failure have
+    to string-compare.
 
 ## Research notes
 
