@@ -164,37 +164,30 @@ Validation: exactly one of `target` OR `fileUrl+position` supplied; else
 - Call-site search: re-use `PsiUsageSearcher`. Add `callersOf(target, scope,
   includeImplementations, max)` returning `List<PsiReference>` — same `ReferencesSearch`
   path `psi.find_usages` already runs.
-- Per reference: find enclosing scope via `PsiTreeUtil.getParentOfType(ref.element,
-  PsiMethod::class, PsiLambdaExpression::class, KtNamedFunction::class,
-  KtLambdaExpression::class)`. Walk its annotations. Also walk parents for recognised
-  wrappers: lock = `ReadAction.run/compute`, `runReadAction`, `runWriteAction`, etc.;
-  threading = `invokeLater`, `invokeAndWait`, `executeOnPooledThread`, `Dispatchers.EDT`.
-  Match by callee FQN — no data-flow.
+- Per reference: enclosing scope via `PsiTreeUtil.getParentOfType(ref.element,
+  PsiMethod, PsiLambdaExpression, KtNamedFunction, KtLambdaExpression)`. Walk its
+  annotations. Walk parents for recognised wrappers (lock: `ReadAction.run/compute`,
+  `runReadAction`, `runWriteAction`; threading: `invokeLater`, `invokeAndWait`,
+  `executeOnPooledThread`, `Dispatchers.EDT`). Match by callee FQN — no data-flow.
 - Status decision tree:
-  - No target annotations → short-circuit: `expected=[]`, zero sites, reason "no contract".
+  - No target annotations → short-circuit, reason "no contract".
   - Enclosing has same annotation → `ok`.
-  - Enclosing lexically inside a recognised wrapper → `ok` (wrapper goes into
-    `contextHints`).
-  - Lambda in a dispatcher we can't reason about → `unknown`.
-  - Caller `@RequiresWriteLock` on target `@RequiresReadLock` → `ok` (write subsumes).
-    Target `@RequiresReadLockAbsence` + caller `@RequiresReadLock` → `mismatch`.
-  - Otherwise → `mismatch`, reason "caller's enclosing method has no compatible annotation".
-- Caller signature: `"${enclosing.containingClass?.qualifiedName}.${enclosing.name}(${params})"`;
-  lambdas render as `"$enclosingMethod.<lambda@line>"`.
+  - Enclosing lexically inside a recognised wrapper → `ok` (wrapper → `contextHints`).
+  - Lambda in opaque dispatcher → `unknown`.
+  - Caller `@RequiresWriteLock` on target `@RequiresReadLock` → `ok` (write subsumes);
+    target `@RequiresReadLockAbsence` + caller `@RequiresReadLock` → `mismatch`.
+  - Otherwise → `mismatch`, reason "no compatible annotation".
+- Caller signature: `"${class.qualifiedName}.${name}(${params})"`; lambdas →
+  `"$enclosingMethod.<lambda@line>"`.
 
-## Threading & EDT model
+## Threading, EDT, timeout
 
-`arch.*` group; no Swing access. PSI work runs in `readActionBlocking { ... }` (10 s cap)
-inside `DumbService.computeWithAlternativeResolveEnabled` (same as `psi.find_usages`).
-`RequirementsAnalyzer` never touches EDT.
-
-## Timeout strategy
-
-Full pipeline (target resolution + ReferencesSearch + per-ref annotation walk) shares
-the existing 10 s `readActionBlocking` budget. On timeout the PCE cancellation aborts
-and we surface `truncated=true` with whatever's been decorated. Per-ref enclosing-scope
-walk is O(parent chain) — bounded. Defaults: `maxCallSites=500`, `scope="project"` (NOT
-`"all"`).
+`arch.*` group; no Swing access. Full pipeline (target resolution + ReferencesSearch +
+per-ref annotation walk) runs in `readActionBlocking { ... }` (10 s cap) inside
+`DumbService.computeWithAlternativeResolveEnabled` — same as `psi.find_usages`. On
+timeout, PCE cancellation aborts and we surface `truncated=true` with whatever's been
+decorated. Per-ref enclosing-scope walk is O(parent chain) — bounded. Defaults:
+`maxCallSites=500`, `scope="project"` (NOT `"all"`).
 
 ## Edge cases
 
@@ -239,59 +232,47 @@ No new META-INF wiring — registered via the existing `ArchitectureToolset` ent
 Platform tests (`BasePlatformTestCase`, same pattern as other `core/platform/*Test.kt`).
 
 - **A — Java `@RequiresReadLock`:** `Good.caller` annotated → `ok`; `Bad.caller` plain
-  → `mismatch`; `Wrapped.caller` lambda inside `ReadAction.run(() -> svc.load())` →
-  `ok` (`contextHints=['inside-ReadAction.run']`); `Indirect.caller` lambda inside
-  `invokeLater { svc.load() }` → `unknown`.
-- **B — Kotlin `@RequiresEdt`:** annotated `goodCaller()` → `ok`; plain `badCaller()`
-  → `mismatch`; lambda inside `invokeLater { … }` → `ok` (EDT-pushing).
-- **C — interface + override:** `Repo.all()` carries `@RequiresReadLock`, `RepoImpl`
-  overrides without, `(x as Repo).all()` checked. With `includeImplementations=true`
-  direct `RepoImpl.all()` calls are also checked against `Repo.all`'s contract.
-- **D — `@RequiresReadLockAbsence`:** caller in `runReadAction { target() }` →
-  `mismatch`.
+  → `mismatch`; lambda inside `ReadAction.run(() -> svc.load())` → `ok`
+  (`contextHints=['inside-ReadAction.run']`); lambda inside `invokeLater { svc.load() }`
+  → `unknown`.
+- **B — Kotlin `@RequiresEdt`:** annotated caller → `ok`; plain caller → `mismatch`;
+  lambda inside `invokeLater { … }` → `ok` (EDT-pushing).
+- **C — interface + override:** `Repo.all()` carries `@RequiresReadLock`; with
+  `includeImplementations=true` direct `RepoImpl.all()` calls also checked against
+  `Repo.all`'s contract.
+- **D — `@RequiresReadLockAbsence`:** caller in `runReadAction { target() }` → `mismatch`.
 - **E — no annotation:** `expected=[]`, zero sites, reason "no contract".
 - **F — unknown FQN:** `McpExpectedError`.
 
-Plus tiny unit tests on `RequirementsAnalyzer` helpers (signature renderer, wrapper-
-call recogniser).
+Plus tiny unit tests on `RequirementsAnalyzer` helpers (signature renderer, wrapper-call
+recogniser).
 
 ## Estimated effort
 
-~1.5 days end-to-end:
-- 0.25 d — shared `PositionResolver` refactor + `PsiUsageSearcher.callersOf`.
-- 0.5 d — `RequirementsAnalyzer` (decision tree + wrapper recognition + signature
-  rendering).
-- 0.25 d — toolset methods + arg validation + `@McpDescription` polish.
-- 0.5 d — fixture creation + platform tests (the meat — six fixtures, two languages,
-  every status branch).
+~1.5 days. 0.25 d — `PositionResolver` refactor + `PsiUsageSearcher.callersOf`.
+0.5 d — `RequirementsAnalyzer` (decision tree + wrappers + signatures). 0.25 d —
+toolset methods + arg validation + `@McpDescription` polish. 0.5 d — fixtures +
+platform tests (the meat: six fixtures, two languages, every status branch).
 
 ## Open questions
 
 1. **Annotation FQN source**: depend on
    `org.jetbrains.idea.devkit.threading.RequiresReadLockAnnotationProvider` (pulls a
-   DevKit dependency we explicitly want to avoid), or hard-code the six FQNs
-   (`com.intellij.util.concurrency.annotations.RequiresReadLock`, …)? Hard-coding wins
-   — six constants, stable since 2019, keeps DevKit-free.
-2. **`kotlinx.coroutines` dispatchers**: `Dispatchers.Main.immediate` / `Dispatchers.EDT`
-   inside `launch` / `withContext` — recognising those would catch a whole class of
-   modern Kotlin code. Out of scope for v1; add a follow-up. Document as a known
-   false-`unknown` source in the `@McpDescription`.
+   DevKit dep we explicitly want to avoid), or hard-code the six FQNs? Hard-coding
+   wins — six constants, stable since 2019, keeps DevKit-free.
+2. **`kotlinx.coroutines` dispatchers**: `Dispatchers.Main.immediate` /
+   `Dispatchers.EDT` inside `launch` / `withContext` — recognising those catches a
+   whole class of modern Kotlin code. Out of scope for v1; document as a known
+   false-`unknown` source in `@McpDescription`.
 3. **`@RequiresBlockingContext`**: flags methods that must NOT be called from a
-   coroutine. Detecting "inside a `suspend fun` or coroutine builder" requires
-   Kotlin-specific PSI handling. v1 only checks for the annotation on the caller;
-   coroutine-scope detection is a follow-up.
-4. **Empty-`expected` short-circuit**: confirmed — return zero call sites with
-   `reason="target has no requirement contract; no analysis needed"`. Saves the 10 s
-   search and yields a self-explanatory response.
+   coroutine. Detecting "inside `suspend fun` / coroutine builder" needs
+   Kotlin-specific PSI handling — v1 only checks the annotation on the caller.
 
 ## References
 
-- Existing code: `core/PsiUsageSearcher.kt` (call-site search infrastructure),
-  `tools/PsiToolset.kt#psi_find_usages` (position resolution + dumb-mode handling).
-- JetBrains DevKit equivalents: `find_lock_requirement_usages` and
-  `find_threading_requirements_usages` in the DevKit MCP toolset (only registered when
-  the DevKit plugin is loaded).
-- Annotations: `com.intellij.util.concurrency.annotations.{RequiresReadLock,
-  RequiresWriteLock, RequiresReadLockAbsence, RequiresEdt, RequiresBackgroundThread,
-  RequiresBlockingContext}` — IntelliJ Community
+- Existing: `core/PsiUsageSearcher.kt`, `tools/PsiToolset.kt#psi_find_usages` (position
+  resolution + dumb-mode handling).
+- DevKit equivalents: `find_lock_requirement_usages`,
+  `find_threading_requirements_usages` (only registered when DevKit plugin is loaded).
+- Annotations: `com.intellij.util.concurrency.annotations.*` — IntelliJ Community
   `platform/util/concurrency/src/com/intellij/util/concurrency/annotations/`.

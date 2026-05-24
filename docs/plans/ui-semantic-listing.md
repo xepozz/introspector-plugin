@@ -22,21 +22,19 @@ dialog from one call instead of crawling `ui.get_tree`.
 @McpTool(name = "ui.list_tool_windows")
 @McpDescription(/* verbatim block below */)
 suspend fun ui_list_tool_windows(
-    @McpDescription("Include tool windows that are currently hidden. Default true.")
-    includeInvisible: Boolean = true,
-    @McpDescription("Case-insensitive substring filter on id OR displayName. Null = no filter.")
-    nameContains: String? = null,
+    @McpDescription("Include tool windows that are currently hidden. Default true.") includeInvisible: Boolean = true,
+    @McpDescription("Case-insensitive substring filter on id OR displayName. Null = no filter.") nameContains: String? = null,
 ): ToolWindowsResponse
 ```
 
 **`@McpDescription` (verbatim, trim-margin):**
 ```
 |Returns a semantic inventory of every registered tool window in the focused
-|project — NOT a Swing component tree. Each entry carries the tool window's id,
-|displayName, anchor (LEFT/RIGHT/BOTTOM/TOP), visibility, active/focused flag,
-|split-mode flag, type (DOCKED/FLOATING/SLIDING/WINDOWED), iconPath, current
-|content-tab count, and the pluginId that contributed it (cross-referenced from
-|our `arch.*` inventory via the `com.intellij.toolWindow` extension point).
+|project — NOT a Swing component tree. Each entry: id, displayName, anchor
+|(LEFT/RIGHT/BOTTOM/TOP), visibility, active/focused flag, split-mode flag,
+|type (DOCKED/FLOATING/SLIDING/WINDOWED), iconPath, content-tab count, and the
+|pluginId that contributed it (cross-referenced from our `arch.*` inventory via
+|the `com.intellij.toolWindow` extension point).
 |
 |Use this when: you need to know WHICH tool windows exist before focusing,
 |capturing, or drilling into one. Typical first call for "open the Database tool
@@ -46,14 +44,12 @@ suspend fun ui_list_tool_windows(
 |use `ui.get_tree` with `rootSelector="tool_window:<id>"`.
 |
 |Returns: { toolWindows: ToolWindowInfo[], project: string?, warnings: string[] }.
-|ToolWindowInfo = { id, displayName, anchor, type, isVisible, isActive, isSplit,
-|isFloating, iconPath, contentCount, providedByPluginId }. `iconPath` is a
-|best-effort toString — may be null for procedural icons. `providedByPluginId`
-|is null when the window was registered programmatically (no EP).
+|`iconPath` is a best-effort toString — may be null for procedural icons.
+|`providedByPluginId` is null when the window was registered programmatically.
 |
 |Examples:
 |  (no args)                  — every tool window, visible + hidden
-|  includeInvisible=false     — only currently shown tool windows
+|  includeInvisible=false     — only currently shown
 |  nameContains="Problems"    — substring filter on id or displayName
 ```
 
@@ -85,31 +81,29 @@ data class ToolWindowInfo(
 @McpTool(name = "ui.list_dialogs")
 @McpDescription(/* verbatim block below */)
 suspend fun ui_list_dialogs(
-    @McpDescription("Include Dialogs that exist but aren't showing (isShowing==false). Default false.")
-    includeInvisible: Boolean = false,
+    @McpDescription("Include Dialogs that exist but aren't showing (isShowing==false). Default false.") includeInvisible: Boolean = false,
 ): DialogsResponse
 ```
 
 **`@McpDescription` (verbatim, trim-margin):**
 ```
-|Lists currently-open `JDialog` / `java.awt.Dialog` windows across the whole JVM —
-|both modal and modeless. Each entry carries title, a ComponentRegistry id (so you
-|can pass it back to `ui.get_tree` / `ui.get_properties` / `screenshot.capture`),
-|bounds, modality, resizable flag, and the FQN of the dialog's content class
-|(typically a `DialogWrapper` subclass for IntelliJ dialogs).
+|Lists currently-open `JDialog` / `java.awt.Dialog` windows across the JVM —
+|both modal and modeless. Each entry: title, ComponentRegistry id (reusable with
+|`ui.get_tree` / `ui.get_properties` / `screenshot.capture`), bounds, modality,
+|resizable flag, and the FQN of the dialog's content class (typically a
+|`DialogWrapper` subclass for IntelliJ dialogs).
 |
 |Use this when: you need to know IF a dialog is up before deciding what to do
-|next — e.g. an agent about to invoke an action wants to confirm no blocking
-|modal is in the way. Complements `ui.get_tree` (which returns one dialog's tree)
-|— call `ui.list_dialogs` first to discover ids.
+|next — e.g. before invoking an action, confirm no blocking modal is in the way.
+|Complements `ui.get_tree` (returns one dialog's tree) — call `ui.list_dialogs`
+|first to discover ids.
 |
-|Do NOT use this when: you want regular IDE frames (not Dialogs — use
-|`ui.find_by_xpath` with `//IdeFrameImpl`), popups (`JBPopup` / heavyweight popup
-|menus), or notifications (live in tool windows / balloons).
+|Do NOT use this when: you want regular IDE frames (use `ui.find_by_xpath` with
+|`//IdeFrameImpl`), popups (`JBPopup` / heavyweight popup menus), or notifications
+|(live in tool windows / balloons).
 |
-|Returns: { dialogs: DialogInfo[], warnings: string[] }. DialogInfo = { id, title,
-|isModal, isResizable, isShowing, bounds: {x,y,width,height}, contentClass }.
-|`title` may be null. `contentClass` resolves the `DialogWrapper` peer via
+|Returns: { dialogs: DialogInfo[], warnings: string[] }. `title` may be null.
+|`contentClass` resolves the `DialogWrapper` peer via
 |`DialogWrapper.findInstance(component)` when possible, else falls back to the
 |dialog's own `getClass().name`.
 |
@@ -140,56 +134,49 @@ data class DialogInfo(
 - `com.intellij.openapi.wm.ToolWindowManager.getInstance(project)`,
   `toolWindowIds: Array<String>`, `getToolWindow(id): ToolWindow?`.
 - `ToolWindow`: `id`, `stripeTitle`/`title`, `anchor`, `isVisible`, `isActive`,
-  `isSplitMode`, `type` (`ToolWindowType`), `icon`, `contentManager.contentCount`.
-  All stable public API, not `@ApiStatus.Experimental`.
+  `isSplitMode`, `type` (`ToolWindowType`), `icon`, `contentManager.contentCount`
+  — all stable public API.
 - Focused project: `IdeFocusManager.getGlobalInstance().lastFocusedFrame?.project`,
   fall back to `ProjectManager.getInstance().openProjects.firstOrNull()`.
 - Plugin attribution: reuse `core/internal/ExtensionMetadata.kt` (TtlCache-backed)
   — enumerate `com.intellij.toolWindow` EP, key by `id` attribute, value =
-  `pluginDescriptor.pluginId.idString`. Per CLAUDE.md pitfalls: `ep.size()`,
-  `ExtensionComponentAdapter.pluginDescriptor` — never `extensionList`.
-- Dialogs: `java.awt.Window.getWindows()` filtered to `java.awt.Dialog`
-  (covers `JDialog`); `com.intellij.openapi.ui.DialogWrapper.findInstance(Component)`
-  for content class.
+  `pluginDescriptor.pluginId.idString`. Per CLAUDE.md pitfalls: use `ep.size()`
+  and `ExtensionComponentAdapter.pluginDescriptor`, never `extensionList`.
+- Dialogs: `java.awt.Window.getWindows()` filtered to `java.awt.Dialog`;
+  `com.intellij.openapi.ui.DialogWrapper.findInstance(Component)` for content class.
 
 ## Threading & EDT model
 
 Both tools touch Swing state and **must** wrap logic in `onEdtBlocking { … }`
-(uses `ModalityState.any()` — not held back by our own exec confirmation):
-
-- `ToolWindowManager.getToolWindow(id)` and most `ToolWindow` getters
-  (`isVisible`, `isActive`, `contentManager.*`) are EDT-only.
-- `Window.getWindows()` itself is thread-safe, but resolving titles, bounds,
-  and `DialogWrapper.findInstance` (walks the component hierarchy via client
-  properties) requires EDT.
-
-No `ReadAction` needed. EP enumeration for plugin attribution reuses the
-thread-safe `ExtensionMetadata` cache, off-EDT.
+(`ModalityState.any()` — not blocked by our own exec confirmation).
+`ToolWindowManager.getToolWindow(id)` and most `ToolWindow` getters are EDT-only;
+`Window.getWindows()` is thread-safe but resolving titles/bounds and
+`DialogWrapper.findInstance` (walks client-property hierarchy) requires EDT. No
+`ReadAction` — neither tool touches PSI/VFS. EP enumeration for plugin attribution
+reuses the thread-safe `ExtensionMetadata` cache off-EDT.
 
 ## Timeout strategy
 
-Cheap: tool-window inventory is O(N) over `toolWindowIds` (≈15–40 ids);
-dialog inventory is O(W) over `Window.getWindows()` (≈<10). Both fit easily
-under the 10 s `onEdtBlocking` cap. No paging.
+Cheap: tool-window inventory O(N) over `toolWindowIds` (≈15–40); dialog inventory
+O(W) over `Window.getWindows()` (≈<10). Both fit easily under the 10 s
+`onEdtBlocking` cap. No paging.
 
 ## Edge cases
 
-1. **No focused project** → `ToolWindowsResponse(toolWindows = emptyList(),
-   project = null, warnings = ["No focused project; tool windows are
-   project-scoped."])`. Do not throw.
-2. **Multi-project IntelliJ** — dialogs are top-level Windows, so a dialog
-   from a non-focused project still appears in `ui.list_dialogs`. Intentional:
-   agent needs to see ALL blocking modals.
-3. **`JDialog` with null title** → emit `title = null`, not `""`.
-4. **`DialogWrapper` not yet shown (`isShowing=false`)** → only listed when
-   `includeInvisible=true`.
-5. **Tool window not yet initialised** — `contentManager.contentCount` can
-   throw before lazy init. Wrap per-window collection in `runCatching { … }`;
-   on failure emit a `warnings` entry with the id.
-6. **Procedural `ToolWindow.icon`** — `toString()` is useless; emit `null`.
-7. **Splash / login windows early in startup** — filter strictly by `is Dialog`.
-8. **`com.intellij.toolWindow` EP without `id` attribute** —
-   `providedByPluginId` ends up `null` (same fallback as `arch.*`).
+1. **No focused project** → `ToolWindowsResponse(toolWindows=[], project=null,
+   warnings=["No focused project; tool windows are project-scoped."])`. Do not throw.
+2. **Multi-project IntelliJ** — dialogs are top-level Windows, so a dialog from
+   a non-focused project still appears in `ui.list_dialogs`. Intentional: agent
+   needs to see ALL blocking modals.
+3. **`JDialog` with null title** → emit `title = null`, not `""`. **`DialogWrapper`
+   not yet shown (`isShowing=false`)** → listed only when `includeInvisible=true`.
+4. **Tool window not yet initialised** — `contentManager.contentCount` can throw
+   before lazy init. Wrap per-window collection in `runCatching { … }`; on failure
+   emit a `warnings` entry with the id.
+5. **Procedural `ToolWindow.icon`** — `toString()` useless; emit `null`. **Splash /
+   login windows early in startup** — filter strictly by `is Dialog`.
+6. **`com.intellij.toolWindow` EP without `id` attribute** — `providedByPluginId`
+   ends up `null` (same fallback as `arch.*`).
 
 ## Files to create/modify
 
@@ -209,48 +196,42 @@ No new META-INF wiring — both tools live in the always-loaded
 
 ## Test plan
 
-Platform tests (`BasePlatformTestCase`, real IntelliJ runtime):
+Platform tests (`BasePlatformTestCase`):
 
-`ToolWindowInspectorPlatformTest`:
-- `test_returns_default_tool_windows()` — fixture project has `Project` with `anchor=="LEFT"`.
-- `test_nameContains_filter_is_case_insensitive()` — `"project"` and `"PROJECT"` both match.
-- `test_invisible_filter_drops_hidden()` — hide one, assert `includeInvisible=false` excludes it.
-- `test_plugin_attribution_for_builtin_id()` — `Project` attributed to `com.intellij`.
+`ToolWindowInspectorPlatformTest` — (1) fixture project exposes `Project` with
+`anchor=="LEFT"`; (2) `nameContains` is case-insensitive (`"project"`/`"PROJECT"`
+both match); (3) `includeInvisible=false` excludes hidden windows;
+(4) `Project` attributed to plugin `com.intellij`.
 
-`DialogInspectorPlatformTest`:
-- `test_returns_empty_when_no_dialogs_open()`.
-- `test_lists_open_dialog_with_title_and_modality()` — `JDialog` with known title, asserts `isModal`.
-- `test_resolves_dialog_wrapper_content_class()` — minimal `DialogWrapper`; `contentClass` is its FQN.
-- `test_null_title_is_emitted_as_null()` — `JDialog()` with no title.
+`DialogInspectorPlatformTest` — (1) empty list when no dialogs open;
+(2) open `JDialog` with known title surfaces with correct `isModal`; (3) minimal
+`DialogWrapper` resolves `contentClass` to its FQN, not `JDialog`; (4) `JDialog()`
+with no title emits `title = null`.
 
 Toolset wrappers are thin pass-throughs — no separate toolset test.
 
 ## Estimated effort
 
-- ~0.4 d: `ToolWindowInspector` + plugin-id attribution.
-- ~0.3 d: `DialogInspector` + `DialogWrapper` resolution.
-- ~0.2 d: Toolset wiring, models, `@McpDescription` polish.
-- ~0.1 d: Platform tests.
-- **Total: ~1 day combined**, matches the README inventory entry.
+- ~0.4 d `ToolWindowInspector` + plugin-id attribution; ~0.3 d `DialogInspector`
+  + `DialogWrapper` resolution; ~0.2 d toolset wiring/models/`@McpDescription`
+  polish; ~0.1 d platform tests. **Total: ~1 day combined**, matches the README
+  inventory entry.
 
 ## Open questions / risks
 
 1. Filter IDE-internal infrastructure dialogs (auto-update notification, splash,
-   hidden helper Dialogs)? Leaning **no** for v1 — agent should see what the
-   user sees. Revisit if noisy.
+   hidden helpers)? Leaning **no** for v1 — agent should see what the user sees.
+   Revisit if noisy.
 2. Surface the `Disposable` parent of tool-window content for lifecycle
-   debugging? Out of scope for v1 — adds internal API dependency for marginal value.
-3. `ToolWindow.stripeTitle` vs `title` — use `stripeTitle` (user-facing),
-   fall back to `id` if blank.
-4. Plugin-id attribution caches via the 60 s `TtlCache`; a freshly installed
-   plugin's tool window lags by up to a minute. Acceptable — same as `arch.*`.
+   debugging? Out of scope for v1 — internal API for marginal value.
+3. `ToolWindow.stripeTitle` vs `title` — use `stripeTitle` (user-facing), fall
+   back to `id` if blank.
+4. Plugin attribution caches via the 60 s `TtlCache`; a freshly installed
+   plugin's tool window lags ≤1 min. Acceptable — same as `arch.*`.
 
 ## References
 
 - `tools/UiInspectorToolset.kt` — `ui.get_tree` shows the `onEdtBlocking` pattern.
-- `core/ComponentTreeWalker.collectToolWindowRoots` — same EDT-side
-  `ToolWindowManagerEx.getInstanceEx(project).getToolWindow(id)` idiom.
-- `core/internal/ExtensionMetadata.kt` — TtlCache-backed EP cache; reuse for
-  plugin attribution.
-- JetBrains MCP equivalent: **none.** Built-in 2025.2+ MCP server ships zero
-  UI introspection tools.
+- `core/ComponentTreeWalker.collectToolWindowRoots` — same EDT idiom.
+- `core/internal/ExtensionMetadata.kt` — TtlCache-backed EP cache; reuse here.
+- JetBrains MCP equivalent: **none** — built-in 2025.2+ MCP server ships zero UI tools.
