@@ -1,6 +1,7 @@
 package com.github.xepozz.ide.introspector.tools
 
 import com.github.xepozz.ide.introspector.core.PsiOutlineCollector
+import com.github.xepozz.ide.introspector.core.PsiHierarchyResolver
 import com.github.xepozz.ide.introspector.core.PsiReferenceCollector
 import com.github.xepozz.ide.introspector.core.PsiStructureWalker
 import com.github.xepozz.ide.introspector.core.PsiSymbolResolver
@@ -9,10 +10,12 @@ import com.github.xepozz.ide.introspector.model.FindUsagesResponse
 import com.github.xepozz.ide.introspector.model.GetOutlineResponse
 import com.github.xepozz.ide.introspector.model.GetPsiStructureResponse
 import com.github.xepozz.ide.introspector.model.GetReferencesResponse
+import com.github.xepozz.ide.introspector.model.GotoImplementationResponse
 import com.github.xepozz.ide.introspector.model.OpenFileInfo
 import com.github.xepozz.ide.introspector.model.OpenFilesResponse
 import com.github.xepozz.ide.introspector.util.PositionResolver
 import com.github.xepozz.ide.introspector.model.SymbolAtResponse
+import com.github.xepozz.ide.introspector.model.TypeHierarchyResponse
 import com.github.xepozz.ide.introspector.util.onEdtBlocking
 import com.github.xepozz.ide.introspector.util.readActionBlocking
 import com.intellij.mcpserver.McpExpectedError
@@ -501,6 +504,107 @@ class PsiToolset : McpToolset {
                 // but tests should also work when the file was loaded via PSI without a backing
                 // VirtualFile (rare). Ensure we always return a fileUrl from the resolved request.
                 if (resp.fileUrl.isEmpty()) resp.copy(fileUrl = vf.url) else resp
+    @McpTool(name = "psi.type_hierarchy")
+    @McpDescription(
+        """
+        |Returns the type hierarchy of a class — supertypes (parents) and/or subtypes
+        |(implementors / extenders) — as a tree rooted at the target. Mirrors IntelliJ's
+        |Hierarchy tool window (Ctrl+H, "Type Hierarchy").
+        |
+        |Use this when:
+        |  - The agent needs what a class extends / implements ("up").
+        |  - The agent needs who extends or implements a class ("down").
+        |  - A multi-level tree is more useful than a flat list.
+        |  - Sealed-type exhaustiveness check — direct subtypes included, `isSealed` flagged.
+        |
+        |Do NOT use this when:
+        |  - You only need concrete impls of an interface / abstract member —
+        |    psi.goto_implementation is more focused and returns method signatures.
+        |  - You want references / call sites — that is psi.find_usages.
+        |
+        |Target: pass `target` (FQN, takes precedence) OR a position (fileUrl + offset
+        |OR line+column) on a class decl / reference. Anonymous + local classes are
+        |recognised at a position but never appear as subtype nodes (no FQN).
+        |
+        |Scope (default "project"): "file" (rare), "project" (default), "all" (includes
+        |library sources — for hot types like java.util.List or java.lang.Object the
+        |subtype walk can saturate the 10s read-action timeout; a warning is appended).
+        |
+        |Caps: maxDepth (5) and maxNodes (200) bound the walk. On a cap, `truncated`
+        |is set and the cut branch's leaf carries `childrenTruncated=true`.
+        |
+        |Returns: { target: HierarchyClassRef, supertypes: HierarchyNode?, subtypes:
+        |HierarchyNode?, direction, scope, truncated, warnings[] }. Each HierarchyNode
+        |has `node` + `children[]` (parents for supertypes, child classes for subtypes).
+        |java.lang.Object is included as supertype root when walking "up" but its
+        |subtype walk is always rejected (would be the world).
+        |
+        |Examples:
+        |  target="com.intellij.openapi.editor.Editor"         — both directions, project
+        |  target="java.util.List", direction="up"             — super-interfaces only
+        |  fileUrl=null, line=42, column=14, direction="down"  — subtypes under caret
+        |  target="com.acme.Sealed", direction="down"          — exhaustive sealed list
+        """
+    )
+    suspend fun psi_type_hierarchy(
+        @McpDescription("FQN of the target class (e.g. \"com.intellij.openapi.editor.Editor\"). Takes precedence over the positional args.")
+        target: String? = null,
+        @McpDescription("VFS URL of the file holding the target. null → active editor tab. Only used when `target` is null.")
+        fileUrl: String? = null,
+        @McpDescription("Document offset of the caret. Used when `target` is null. Alternative to line+column.")
+        offset: Int? = null,
+        @McpDescription("1-based line number. Used when `target` is null. Alternative to `offset`.")
+        line: Int? = null,
+        @McpDescription("1-based column number. Used when `target` is null. Pair with `line`.")
+        column: Int? = null,
+        @McpDescription("\"up\" (supertypes), \"down\" (subtypes), or \"both\" (default).")
+        direction: String = "both",
+        @McpDescription("\"project\" (default) / \"all\" (includes library sources, may time out on hot types) / \"file\" (rare).")
+        scope: String = "project",
+        @McpDescription("Max tree depth from the target (1..20). Default 5.")
+        maxDepth: Int = 5,
+        @McpDescription("Hard cap on the total node count. Default 200.")
+        maxNodes: Int = 200,
+    ): TypeHierarchyResponse {
+        require(direction == "up" || direction == "down" || direction == "both") {
+            "direction must be one of: up, down, both — got '$direction'"
+        }
+        require(scope == "file" || scope == "project" || scope == "all") {
+            "scope must be one of: file, project, all — got '$scope'"
+        }
+        require(maxDepth in 1..20) { "maxDepth must be in 1..20" }
+        require(maxNodes in 1..5_000) { "maxNodes must be in 1..5000" }
+        require(target != null || (offset != null || (line != null && column != null))) {
+            "Provide either `target` (FQN) or a position (offset OR line+column)."
+        }
+
+        val project = requireProject()
+        return readActionBlocking {
+            val resolvedPsiFile: PsiFile?
+            val resolvedOffset: Int?
+            if (target.isNullOrBlank()) {
+                val rf = resolveFile(project, fileUrl)
+                resolvedPsiFile = rf.psiFile
+                resolvedOffset = resolveOffset(rf.document, offset, line, column)
+            } else {
+                resolvedPsiFile = null
+                resolvedOffset = null
+            }
+            DumbService.getInstance(project).computeWithAlternativeResolveEnabled<TypeHierarchyResponse, RuntimeException> {
+                try {
+                    PsiHierarchyResolver.typeHierarchy(
+                        project = project,
+                        target = target,
+                        psiFile = resolvedPsiFile,
+                        offset = resolvedOffset,
+                        direction = direction,
+                        scopeKind = scope,
+                        maxDepth = maxDepth,
+                        maxNodes = maxNodes,
+                    )
+                } catch (e: PsiHierarchyResolver.NoTargetException) {
+                    throw McpExpectedError(e.message ?: "No class at position", JsonObject(emptyMap()))
+                }
             }
         }
     }
@@ -569,6 +673,81 @@ class PsiToolset : McpToolset {
                 maxNodes = maxNodes,
             )
             if (resp.fileUrl.isEmpty()) resp.copy(fileUrl = vf.url) else resp
+    @McpTool(name = "psi.goto_implementation")
+    @McpDescription(
+        """
+        |Returns every concrete implementation / override of the symbol at a position —
+        |interfaces and abstract classes resolve to concrete extenders, abstract /
+        |interface methods resolve to concrete overrides. Equivalent to IntelliJ's
+        |Ctrl+Alt+B "Goto Implementation".
+        |
+        |Use this when:
+        |  - You see an interface / abstract method and need the concrete implementors.
+        |  - The agent is tracing a call graph through an abstraction boundary.
+        |  - You want "what overrides this method?" without the noise of usages /
+        |    reference sites that psi.find_usages would return.
+        |
+        |Do NOT use this when:
+        |  - You want call sites of a method — use psi.find_usages.
+        |  - You want a multi-level type tree — use psi.type_hierarchy.
+        |  - The caret is on a concrete final method — there are no overrides.
+        |
+        |Position: pass `offset` OR `line`+`column`. The caret may be on a class /
+        |interface decl or ref (returns subclasses / implementors), or on a method decl
+        |or call site (returns overriding methods). Reported in `target.kind`
+        |("class" | "method").
+        |
+        |Scope (default "project"): "project" (default — matches Ctrl+Alt+B), "all"
+        |(includes library sources; on JDK / platform symbols can saturate the 10s
+        |timeout — warning appended), "file" (rare).
+        |
+        |Returns: { target: ImplementationTarget, implementations: ImplementationInfo[],
+        |scope, total, truncated, warnings[] }. Sorted by (fileUrl, range). For method
+        |targets `signature` uses the *erasure* shown in the overrider's source — no
+        |cross-boundary generic unification.
+        |
+        |Examples:
+        |  fileUrl=null, line=10, column=18         — overrides of method at row 10
+        |  fileUrl=null, line=5,  column=12         — implementors of interface at row 5
+        |  scope="all", maxResults=50               — include library overrides, capped
+        """
+    )
+    suspend fun psi_goto_implementation(
+        @McpDescription("VFS URL of the file. null → active editor tab.")
+        fileUrl: String? = null,
+        @McpDescription("Document offset of the caret. Alternative to line+column.")
+        offset: Int? = null,
+        @McpDescription("1-based line number. Alternative to `offset`.")
+        line: Int? = null,
+        @McpDescription("1-based column number. Pair with `line`.")
+        column: Int? = null,
+        @McpDescription("\"project\" (default — matches Ctrl+Alt+B) / \"all\" (slow on hot symbols) / \"file\" (rare).")
+        scope: String = "project",
+        @McpDescription("Hard cap on returned implementations. Default 200.")
+        maxResults: Int = 200,
+    ): GotoImplementationResponse {
+        require(scope == "file" || scope == "project" || scope == "all") {
+            "scope must be one of: file, project, all — got '$scope'"
+        }
+        require(maxResults in 1..5_000) { "maxResults must be in 1..5000" }
+
+        val project = requireProject()
+        return readActionBlocking {
+            val (psiFile, _, document) = resolveFile(project, fileUrl)
+            val pos = resolveOffset(document, offset, line, column)
+            DumbService.getInstance(project).computeWithAlternativeResolveEnabled<GotoImplementationResponse, RuntimeException> {
+                try {
+                    PsiHierarchyResolver.gotoImplementation(
+                        project = project,
+                        psiFile = psiFile,
+                        offset = pos,
+                        scopeKind = scope,
+                        maxResults = maxResults,
+                    )
+                } catch (e: PsiHierarchyResolver.NoTargetException) {
+                    throw McpExpectedError(e.message ?: "No class/method at position", JsonObject(emptyMap()))
+                }
+            }
         }
     }
 

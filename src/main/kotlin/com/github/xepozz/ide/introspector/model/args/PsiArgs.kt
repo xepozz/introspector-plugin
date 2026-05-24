@@ -37,3 +37,27 @@ data class FindUsagesArgs(
     val truncateTextAt: Int = 120,
     val groupByFile: Boolean = false,
 )
+
+@Serializable
+data class TypeHierarchyArgs(
+    /** FQN of the target class. Takes precedence over the positional args. */
+    val target: String? = null,
+    val fileUrl: String? = null,
+    val offset: Int? = null,
+    val line: Int? = null,
+    val column: Int? = null,
+    val direction: String = "both",            // "up" | "down" | "both"
+    val scope: String = "project",             // "file" | "project" | "all"
+    val maxDepth: Int = 5,
+    val maxNodes: Int = 200,
+)
+
+@Serializable
+data class GotoImplementationArgs(
+    val fileUrl: String? = null,
+    val offset: Int? = null,
+    val line: Int? = null,
+    val column: Int? = null,
+    val scope: String = "project",             // "file" | "project" | "all"
+    val maxResults: Int = 200,
+)

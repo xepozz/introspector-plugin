@@ -302,6 +302,104 @@ data class GetOutlineResponse(
     val language: String,
     val nodes: List<OutlineNode> = emptyList(),
     val nodeCount: Int = 0,
+// =====================================================================================
+// psi.type_hierarchy
+// =====================================================================================
+
+/**
+ * Compact reference to a class participating in a type hierarchy (the target itself, a
+ * parent, or a child). For library classes `fileUrl` is a `jar://…` URL and
+ * `declarationRange` is the range of the class declaration inside the (possibly
+ * decompiled) source. Anonymous / local classes are recognised at a position but
+ * never appear as a subtype node (no usable FQN).
+ */
+@Serializable
+data class HierarchyClassRef(
+    val fqn: String? = null,
+    val psiClass: String,
+    val fileUrl: String? = null,
+    val declarationRange: TextRangeInfo? = null,
+    val isInterface: Boolean = false,
+    val isAbstract: Boolean = false,
+    val isFinal: Boolean = false,
+    val isSealed: Boolean = false,
+    val modifiers: List<String> = emptyList(),
+)
+
+/**
+ * One node in a type-hierarchy tree (rooted at the target). `children` walks the
+ * direction-specific neighbourhood — for supertype trees the children are the parents
+ * (extends / implements), for subtype trees the children are the direct extenders /
+ * implementors. `childrenTruncated` is set on the leaf where a depth or node cap cut
+ * the recursion.
+ */
+@Serializable
+data class HierarchyNode(
+    val node: HierarchyClassRef,
+    val children: List<HierarchyNode> = emptyList(),
+    val childrenTruncated: Boolean = false,
+)
+
+@Serializable
+data class TypeHierarchyResponse(
+    val target: HierarchyClassRef,
+    val supertypes: HierarchyNode? = null,
+    val subtypes: HierarchyNode? = null,
+    val direction: String,
+    val scope: String,
+    val truncated: Boolean = false,
+    val warnings: List<String> = emptyList(),
+)
+
+// =====================================================================================
+// psi.goto_implementation
+// =====================================================================================
+
+/**
+ * The symbol `psi.goto_implementation` resolved to under the caret. `kind` is either
+ * "class" (caret on an interface / abstract class / class ref) or "method" (caret on
+ * an abstract / interface method or a method call). For library targets `fileUrl` is a
+ * `jar://…` URL.
+ */
+@Serializable
+data class ImplementationTarget(
+    val name: String? = null,
+    val psiClass: String,
+    /** "class" — implementors / extenders ; "method" — overriders. */
+    val kind: String,
+    val fileUrl: String? = null,
+    val declarationRange: TextRangeInfo? = null,
+    val isAbstract: Boolean = false,
+    val isInterface: Boolean = false,
+)
+
+/**
+ * One concrete implementation / override found for the target.
+ *
+ *   - `signature` is null when `target.kind == "class"`; for methods it is the
+ *     overrider's erasure as it appears in the overrider's source ("R name(P p)") —
+ *     no cross-boundary generic unification.
+ *   - `isAbstract` flags intermediate overrides that are themselves abstract.
+ *   - `isOverride` is true for method results (mirrors `@Override`-equivalent semantics),
+ *     false for class results.
+ */
+@Serializable
+data class ImplementationInfo(
+    val fileUrl: String,
+    val range: TextRangeInfo,
+    val lineSnippet: String,
+    val declaringClassFqn: String? = null,
+    val signature: String? = null,
+    val isAbstract: Boolean = false,
+    val isOverride: Boolean = false,
+)
+
+@Serializable
+data class GotoImplementationResponse(
+    val target: ImplementationTarget,
+    val implementations: List<ImplementationInfo> = emptyList(),
+    val scope: String,
+    val total: Int,
     val truncated: Boolean = false,
     val warnings: List<String> = emptyList(),
 )
