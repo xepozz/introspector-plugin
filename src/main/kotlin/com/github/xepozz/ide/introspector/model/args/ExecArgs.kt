@@ -10,3 +10,9 @@ data class ExecuteKotlinArgs(
     val captureStderr: Boolean = true,
     val runOn: String = "edt",               // "edt" | "background" | "auto"
 )
+
+@Serializable
+data class CompileCheckArgs(
+    val code: String,
+    val wrap: Boolean = true,
+)

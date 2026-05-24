@@ -1,17 +1,29 @@
 package com.github.xepozz.ide.introspector.tools
 
 import com.github.xepozz.ide.introspector.core.PluginInventory
+import com.github.xepozz.ide.introspector.core.RequirementsAnalyzer
+import com.github.xepozz.ide.introspector.model.CheckRequirementsResponse
 import com.github.xepozz.ide.introspector.model.ExtensionInfo
 import com.github.xepozz.ide.introspector.model.ListExtensionPointsResponse
 import com.github.xepozz.ide.introspector.model.ListExtensionsResponse
 import com.github.xepozz.ide.introspector.model.ListPluginsResponse
 import com.github.xepozz.ide.introspector.model.PluginDetails
+import com.github.xepozz.ide.introspector.util.PositionResolver
+import com.github.xepozz.ide.introspector.util.readActionBlocking
 import com.intellij.mcpserver.McpExpectedError
 import com.intellij.mcpserver.McpToolset
 import com.intellij.mcpserver.annotations.McpDescription
 import com.intellij.mcpserver.annotations.McpTool
+import com.intellij.mcpserver.projectOrNull
 import com.intellij.openapi.actionSystem.ex.ActionManagerEx
 import com.intellij.openapi.extensions.PluginId
+import com.intellij.openapi.project.DumbService
+import com.intellij.openapi.project.Project
+import com.intellij.psi.PsiDocumentManager
+import com.intellij.psi.PsiFile
+import com.intellij.psi.PsiManager
+import com.intellij.openapi.vfs.VirtualFileManager
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.serialization.json.JsonObject
 
 class ArchitectureToolset : McpToolset {
@@ -249,6 +261,195 @@ class ArchitectureToolset : McpToolset {
         }
         return ListExtensionsResponse(extensions, extensions.size)
     }
+
+    @McpTool(name = "arch.check_lock_requirements")
+    @McpDescription(
+        """
+        |Statically verifies that every caller of a method holds the IntelliJ read/write lock
+        |the method requires. The target's @RequiresReadLock / @RequiresWriteLock /
+        |@RequiresReadLockAbsence is the contract; each caller is checked by walking to the
+        |enclosing method/lambda: does it carry the same annotation (transitive), or is it
+        |lexically inside ReadAction.compute / runReadAction / WriteAction.run / runWriteAction?
+        |Mirror of DevKit's `find_lock_requirement_usages` — works in IDEs without DevKit.
+        |
+        |Use this when: "is foo() always called under a read lock?", "who calls bar() without a
+        |write action?", or before changing a method's lock contract.
+        |
+        |Do NOT use this when: you want runtime/dynamic checks (static — Runnable posted to
+        |invokeLater is `unknown`, not `ok`), or the target has no annotation (response is
+        |trivially empty). For "who calls foo()?" without lock analysis use psi.find_usages.
+        |
+        |Target: pass `target` as `FQN.method` (overload-ambiguous; every method with that
+        |simple name is included), OR `fileUrl` + offset / line+column on the method
+        |declaration — same position semantics as psi.find_usages.
+        |
+        |Returns: { target, expected[], callSites[], total, truncated }. CallSiteAnalysis has
+        |fileUrl, range, callerSignature, callerAnnotations[], contextHints[], status
+        |('ok'|'mismatch'|'unknown'), reason. `unknown` = we can't reason statically
+        |(invokeLater, reflection, coroutine builders) — agent should escalate to manual review.
+        |
+        |Examples:
+        |  target="com.intellij.psi.PsiManager.findFile"                          — all callers
+        |  fileUrl=null, line=42, column=12                                        — method at row 42 in active editor
+        |  target="com.example.MyService.doStuff", scope="file"                    — same-file only
+        |  target="com.example.MyService.doStuff", includeImplementations=false    — direct calls only
+        """
+    )
+    suspend fun arch_check_lock_requirements(
+        @McpDescription("FQN.method (e.g. 'com.intellij.psi.PsiManager.findFile'). Mutually exclusive with fileUrl+position.")
+        target: String? = null,
+        @McpDescription("VFS URL of the source file containing the target method. Use with offset OR line+column.")
+        fileUrl: String? = null,
+        @McpDescription("Document offset on the method's name. Alternative to line+column.")
+        offset: Int? = null,
+        @McpDescription("1-based line number of the method's name.")
+        line: Int? = null,
+        @McpDescription("1-based column number of the method's name.")
+        column: Int? = null,
+        @McpDescription("\"project\" (default) / \"file\" / \"all\" (library sources — slow).")
+        scope: String = "project",
+        @McpDescription("Also analyse callers of overrides via DefinitionsScopedSearch. Default true.")
+        includeImplementations: Boolean = true,
+        @McpDescription("Hard cap on returned call sites. Default 500.")
+        maxCallSites: Int = 500,
+    ): CheckRequirementsResponse = runRequirementsCheck(
+        annotationFqns = RequirementsAnalyzer.LOCK_ANNOTATION_FQNS,
+        wrapperKind = RequirementsAnalyzer.WrapperKind.LOCK,
+        target = target, fileUrl = fileUrl, offset = offset, line = line, column = column,
+        scope = scope, includeImplementations = includeImplementations, maxCallSites = maxCallSites,
+    )
+
+    @McpTool(name = "arch.check_threading_requirements")
+    @McpDescription(
+        """
+        |Statically verifies that every caller of a method runs on the thread the method
+        |requires. The target's @RequiresEdt / @RequiresBackgroundThread /
+        |@RequiresBlockingContext annotation is the contract; each caller is checked by walking
+        |to the enclosing method/lambda and asking: same annotation (transitive), or lexically
+        |inside ApplicationManager.invokeLater / SwingUtilities.invokeLater (EDT-pushing) /
+        |executeOnPooledThread (BGT-pushing)? Mirror of DevKit's
+        |`find_threading_requirements_usages` — works in IDEs without DevKit loaded.
+        |
+        |Use this when: "is foo() always called from a BGT?", "who calls X from the EDT?", or
+        |before tightening a threading contract.
+        |
+        |Do NOT use this when: you want runtime checks (ApplicationManager.isDispatchThread()),
+        |or the target has no threading annotation (response trivially empty). For callers
+        |without thread context, use psi.find_usages.
+        |
+        |Target: pass `target` as `FQN.method`, OR `fileUrl` + offset / line+column on the
+        |method's name — same position semantics as psi.find_usages.
+        |
+        |Returns: { target, expected[], callSites[], total, truncated }. CallSiteAnalysis
+        |has callerSignature, callerAnnotations[], contextHints[] (['inside-invokeLater']),
+        |status ('ok'|'mismatch'|'unknown'), reason. Lambdas in opaque Runnable consumers
+        |(Future, ExecutorService, kotlinx coroutines) → 'unknown'.
+        |
+        |Examples:
+        |  target="com.intellij.openapi.editor.Editor.getCaretModel"                — @RequiresEdt callers
+        |  fileUrl="…/MyService.kt", line=20, column=5, scope="file"                — one-file scope
+        |  target="com.example.Backend.doWork", includeImplementations=false        — direct calls only
+        """
+    )
+    suspend fun arch_check_threading_requirements(
+        @McpDescription("FQN.method (e.g. 'com.intellij.openapi.editor.Editor.getCaretModel'). Mutually exclusive with fileUrl+position.")
+        target: String? = null,
+        @McpDescription("VFS URL of the source file containing the target method. Use with offset OR line+column.")
+        fileUrl: String? = null,
+        @McpDescription("Document offset on the method's name. Alternative to line+column.")
+        offset: Int? = null,
+        @McpDescription("1-based line number of the method's name.")
+        line: Int? = null,
+        @McpDescription("1-based column number of the method's name.")
+        column: Int? = null,
+        @McpDescription("\"project\" (default) / \"file\" / \"all\" (library sources — slow).")
+        scope: String = "project",
+        @McpDescription("Also analyse callers of overrides via DefinitionsScopedSearch. Default true.")
+        includeImplementations: Boolean = true,
+        @McpDescription("Hard cap on returned call sites. Default 500.")
+        maxCallSites: Int = 500,
+    ): CheckRequirementsResponse = runRequirementsCheck(
+        annotationFqns = RequirementsAnalyzer.THREADING_ANNOTATION_FQNS,
+        wrapperKind = RequirementsAnalyzer.WrapperKind.THREADING,
+        target = target, fileUrl = fileUrl, offset = offset, line = line, column = column,
+        scope = scope, includeImplementations = includeImplementations, maxCallSites = maxCallSites,
+    )
+
+    // ---------- shared plumbing for the two check_* tools ----------
+
+    private suspend fun runRequirementsCheck(
+        annotationFqns: Set<String>,
+        wrapperKind: RequirementsAnalyzer.WrapperKind,
+        target: String?,
+        fileUrl: String?,
+        offset: Int?,
+        line: Int?,
+        column: Int?,
+        scope: String,
+        includeImplementations: Boolean,
+        maxCallSites: Int,
+    ): CheckRequirementsResponse {
+        require(scope == "project" || scope == "file" || scope == "all") {
+            "scope must be one of: project, file, all — got '$scope'"
+        }
+        require(maxCallSites in 1..5_000) { "maxCallSites must be in 1..5000" }
+        val hasTarget = target != null
+        val hasPosition = fileUrl != null || offset != null || line != null || column != null
+        if (hasTarget == hasPosition) {
+            throw McpExpectedError("specify target OR fileUrl+position", JsonObject(emptyMap()))
+        }
+
+        val project = requireProject()
+        return readActionBlocking {
+            DumbService.getInstance(project).computeWithAlternativeResolveEnabled<CheckRequirementsResponse, RuntimeException> {
+                val (psiFile, pos) = if (target == null) {
+                    val (f, _, doc) = resolveFile(project, fileUrl)
+                    val resolvedOffset = PositionResolver.resolveOffset(doc, offset, line, column)
+                    f to resolvedOffset
+                } else {
+                    null to null
+                }
+                try {
+                    RequirementsAnalyzer.analyze(
+                        project = project,
+                        annotationFqns = annotationFqns,
+                        wrapperKind = wrapperKind,
+                        target = target,
+                        psiFile = psiFile,
+                        offset = pos,
+                        scopeKind = scope,
+                        includeImplementations = includeImplementations,
+                        maxCallSites = maxCallSites,
+                    )
+                } catch (e: RequirementsAnalyzer.TargetNotFound) {
+                    throw McpExpectedError(e.message ?: "Target not found", JsonObject(emptyMap()))
+                } catch (e: RequirementsAnalyzer.JavaModuleUnavailable) {
+                    throw McpExpectedError(e.message ?: "Java module unavailable", JsonObject(emptyMap()))
+                }
+            }
+        }
+    }
+
+    private data class ResolvedFile(val psiFile: PsiFile, val virtualFile: com.intellij.openapi.vfs.VirtualFile, val document: com.intellij.openapi.editor.Document?)
+
+    private fun resolveFile(project: Project, fileUrl: String?): ResolvedFile {
+        val vf: com.intellij.openapi.vfs.VirtualFile = if (fileUrl != null) {
+            VirtualFileManager.getInstance().findFileByUrl(fileUrl)
+                ?: throw McpExpectedError("No file at url: $fileUrl", JsonObject(emptyMap()))
+        } else {
+            throw McpExpectedError("fileUrl is required when target is not supplied", JsonObject(emptyMap()))
+        }
+        val psiFile = PsiManager.getInstance(project).findFile(vf)
+            ?: throw McpExpectedError("File has no PSI: ${vf.url}", JsonObject(emptyMap()))
+        val document = PsiDocumentManager.getInstance(project).getDocument(psiFile)
+        return ResolvedFile(psiFile, vf, document)
+    }
+
+    private suspend fun requireProject(): Project = currentCoroutineContext().projectOrNull
+        ?: throw McpExpectedError(
+            "No focused project. Open a project in this IDE first (arch.check_* tools need PSI access).",
+            JsonObject(emptyMap())
+        )
 
     private fun actionsFor(pluginId: String): List<String> = runCatching {
         val am = ActionManagerEx.getInstanceEx()

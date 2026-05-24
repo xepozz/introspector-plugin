@@ -8,6 +8,7 @@ import com.github.xepozz.ide.introspector.model.GetPsiStructureResponse
 import com.github.xepozz.ide.introspector.model.GetReferencesResponse
 import com.github.xepozz.ide.introspector.model.OpenFileInfo
 import com.github.xepozz.ide.introspector.model.OpenFilesResponse
+import com.github.xepozz.ide.introspector.util.PositionResolver
 import com.github.xepozz.ide.introspector.util.onEdtBlocking
 import com.github.xepozz.ide.introspector.util.readActionBlocking
 import com.intellij.mcpserver.McpExpectedError
@@ -464,24 +465,8 @@ class PsiToolset : McpToolset {
         return ResolvedFile(psiFile, vf, document)
     }
 
-    private fun resolveOffset(document: Document?, offset: Int?, line: Int?, column: Int?): Int {
-        if (offset != null) {
-            require(document == null || offset in 0..document.textLength) {
-                "offset $offset out of bounds (0..${document?.textLength})"
-            }
-            return offset
-        }
-        require(line != null && column != null) {
-            "position required: pass either `offset`, or both `line` and `column`"
-        }
-        require(document != null) { "File has no document — cannot resolve line+column" }
-        require(line in 1..document.lineCount + 1) { "line $line out of bounds (1..${document.lineCount + 1})" }
-        val lineIdx = (line - 1).coerceIn(0, document.lineCount - 1)
-        val lineStart = document.getLineStartOffset(lineIdx)
-        val lineEnd = document.getLineEndOffset(lineIdx)
-        val col = (column - 1).coerceAtLeast(0)
-        return (lineStart + col).coerceAtMost(lineEnd)
-    }
+    private fun resolveOffset(document: Document?, offset: Int?, line: Int?, column: Int?): Int =
+        PositionResolver.resolveOffset(document, offset, line, column)
 
     private suspend fun requireProject(): Project = currentCoroutineContext().projectOrNull
         ?: throw McpExpectedError(

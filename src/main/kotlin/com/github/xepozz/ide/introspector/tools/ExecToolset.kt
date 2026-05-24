@@ -4,7 +4,9 @@ import com.github.xepozz.ide.introspector.exec.AstSafetyChecker
 import com.github.xepozz.ide.introspector.exec.AuditLogger
 import com.github.xepozz.ide.introspector.exec.ConfirmationManager
 import com.github.xepozz.ide.introspector.exec.ExecSettings
+import com.github.xepozz.ide.introspector.exec.KotlinCompileOnly
 import com.github.xepozz.ide.introspector.exec.KotlinExecutor
+import com.github.xepozz.ide.introspector.model.CompileCheckResponse
 import com.github.xepozz.ide.introspector.model.args.ExecuteKotlinArgs
 import com.intellij.mcpserver.McpExpectedError
 import com.intellij.mcpserver.McpToolset
@@ -140,4 +142,72 @@ class ExecToolset : McpToolset {
             warnings = r.warnings,
         )
     }
+
+    @McpTool(name = "exec.compile_check")
+    @McpDescription(
+        """
+        |Compiles a Kotlin snippet in-process and returns every compiler diagnostic
+        |(errors, warnings, info) with line/column positions. NOTHING IS EXECUTED — no
+        |side effects, no confirmation dialog, no audit log entry.
+        |
+        |Use this when:
+        | - You generated a Kotlin snippet and want to verify it compiles BEFORE
+        |   asking the user to apply it (or before invoking exec.execute_kotlin_in_ide).
+        | - You want a fast syntax / type-check on a snippet without spinning up a
+        |   full Gradle build (use JetBrains' build_project for whole-project rebuilds).
+        | - You want to iterate "fix the next compile error" without running anything.
+        |
+        |Do NOT use this when:
+        | - You actually want the side effects — use exec.execute_kotlin_in_ide.
+        | - You want to compile a multi-file change against project sources — JSR-223
+        |   is single-script only; use the IDE's full build via JetBrains' build_project.
+        | - You want lint/style checks beyond the compiler's own diagnostics — this
+        |   tool only surfaces what the Kotlin compiler itself reports.
+        |
+        |Always-on: NOT gated by the 'Allow Kotlin code execution' setting and does
+        |NOT trigger the modal confirmation dialog. Compile is read-only. It does
+        |require the org.jetbrains.kotlin plugin (same prerequisite as
+        |exec.execute_kotlin_in_ide); on IDEs without it, the tool isn't registered.
+        |
+        |WRAPPING (wrap=true, default): the snippet is embedded in the same template
+        |execute_kotlin_in_ide uses, so implicit bindings resolve at compile time:
+        | - project: Project?
+        | - pluginDisposable: Disposable
+        | - read { } / write { } / onEdt { } helpers
+        |This guarantees that "compiles here" implies "compiles under exec.execute_*".
+        |wrap=false: the input is compiled as a raw top-level .kts script — use this
+        |to lint a self-contained file that already has its own imports.
+        |
+        |Diagnostic line/column with wrap=true refer to the WRAPPED script (the
+        |wrapper prepends ~20 lines of imports + helper declarations). Raw line
+        |numbers are surfaced as-is in v1; subtract the wrapper offset client-side
+        |if you need user-snippet coordinates.
+        |
+        |Returns: {
+        |  ok: Boolean,                          // true iff zero ERROR/FATAL diagnostics
+        |  diagnostics: [{
+        |    severity: "FATAL" | "ERROR" | "WARNING" | "INFO" | "DEBUG",
+        |    line: Int?, column: Int?,           // 1-based; null if no position
+        |    file: String?,                      // synthetic name of the wrapped script
+        |    message: String,
+        |    factoryId: String?                  // diagnostic code; may be null
+        |  }],
+        |  warnings: [String],                   // tool-side warnings (e.g. "timed out")
+        |  durationMs: Long
+        |}
+        |
+        |Examples:
+        |  // Verify a generated snippet compiles before running it:
+        |  exec.compile_check code="read { com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project!!).openFiles.map { it.path } }"
+        |
+        |  // Lint a self-contained file with its own imports:
+        |  exec.compile_check code="import kotlin.math.*; val x: Int = sqrt(4.0).toInt()" wrap=false
+        """
+    )
+    suspend fun exec_compile_check(
+        @McpDescription("Kotlin source to compile. Same shape as exec.execute_kotlin_in_ide.code when wrap=true.")
+        code: String,
+        @McpDescription("If true (default), wrap in the SAME Plugin-class template execute_kotlin_in_ide uses, so 'project', 'pluginDisposable', and read/write/onEdt helpers resolve. If false, compile as a raw top-level .kts script.")
+        wrap: Boolean = true,
+    ): CompileCheckResponse = KotlinCompileOnly.check(code, wrap)
 }

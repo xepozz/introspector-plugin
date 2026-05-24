@@ -292,4 +292,54 @@ object PsiUsageSearcher {
         if (s.length <= max) s else s.substring(0, max) + "…"
 
     class NoTargetException(message: String) : RuntimeException(message)
+
+    /**
+     * Collect every PsiReference to [target] within [scope], capped at [max]. Mirrors the
+     * `ReferencesSearch` part of [findUsages] but returns the raw references so callers
+     * (notably [com.github.xepozz.ide.introspector.core.RequirementsAnalyzer]) can run
+     * their own per-ref analysis without re-issuing the search.
+     *
+     * Caller MUST hold a read action.
+     */
+    fun callersOf(
+        target: PsiElement,
+        scope: SearchScope,
+        includeImplementations: Boolean,
+        max: Int,
+    ): List<com.intellij.psi.PsiReference> {
+        val out = ArrayList<com.intellij.psi.PsiReference>(max.coerceAtMost(64))
+        try {
+            ReferencesSearch.search(target, scope).forEach(Processor { ref ->
+                if (out.size >= max) return@Processor false
+                out += ref
+                true
+            })
+        } catch (pce: ProcessCanceledException) {
+            throw pce
+        } catch (_: Throwable) {
+        }
+        if (includeImplementations && out.size < max) {
+            try {
+                DefinitionsScopedSearch.search(target, scope, true).forEach(Processor { impl ->
+                    if (out.size >= max) return@Processor false
+                    if (impl === target) return@Processor true
+                    try {
+                        ReferencesSearch.search(impl, scope).forEach(Processor { ref ->
+                            if (out.size >= max) return@Processor false
+                            out += ref
+                            true
+                        })
+                    } catch (pce: ProcessCanceledException) {
+                        throw pce
+                    } catch (_: Throwable) {
+                    }
+                    true
+                })
+            } catch (pce: ProcessCanceledException) {
+                throw pce
+            } catch (_: Throwable) {
+            }
+        }
+        return out
+    }
 }

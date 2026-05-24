@@ -1,11 +1,13 @@
 package com.github.xepozz.ide.introspector.tools
 
+import com.github.xepozz.ide.introspector.core.ClassCatalog
 import com.github.xepozz.ide.introspector.core.ClassSourceResolver
 import com.github.xepozz.ide.introspector.core.PsiModifiers
 import com.github.xepozz.ide.introspector.model.AttachSourcesResponse
 import com.github.xepozz.ide.introspector.model.ClassSourceState
 import com.github.xepozz.ide.introspector.model.FindClassResponse
 import com.github.xepozz.ide.introspector.model.GetSourceResponse
+import com.github.xepozz.ide.introspector.model.ListClassesResponse
 import com.github.xepozz.ide.introspector.model.ListMembersResponse
 import com.github.xepozz.ide.introspector.model.MemberInfo
 import com.github.xepozz.ide.introspector.model.ParameterInfo
@@ -363,6 +365,127 @@ class CodeSourceToolset : McpToolset {
                 message = "No source-download action is registered/enabled. " +
                     "Project likely isn't Maven/Gradle, or the library isn't managed by a " +
                     "build system. Attach sources manually via File > Project Structure > Libraries.",
+            )
+        }
+    }
+
+    @McpTool(name = "code.list_classes_in_module")
+    @McpDescription(
+        """
+        |Enumerates every top-level class in one project module's source roots. Strict,
+        |structural listing — NOT fuzzy. Companion of JetBrains' search_symbol; use this
+        |when you know the scope but not the names.
+        |
+        |Use this when: agent asks "list all classes in module web-frontend", "what
+        |classes live under com.acme.billing in module payments-core?", "every annotation
+        |in module shared". Returns ClassEntry rows ready for code.get_source / code.list_members.
+        |
+        |Do NOT use this when:
+        |  - You want classes by package across all modules — use code.list_classes_in_package.
+        |  - You want fuzzy / partial-name search — use JetBrains' search_symbol.
+        |  - You want source text — call code.get_source on each fqn.
+        |
+        |Returns: { scope, classes: ClassEntry[], total, truncated, timedOut } where each
+        |ClassEntry has fqn, simpleName, pkg, kind ('class'|'interface'|'enum'|'record'
+        ||'annotation'|'kotlinFileFacade'), fileUrl, declarationRange, byteLength. Anonymous
+        |+ inner classes excluded. Kotlin file-level functions surface as 'kotlinFileFacade'.
+        |
+        |Examples:
+        |  moduleName="payments-core"                                   — all production classes
+        |  moduleName="payments-core", includeTests=true                 — incl. tests
+        |  moduleName="web-frontend", packagePrefix="com.acme.billing"   — sub-tree
+        |  moduleName="shared", kinds=["annotation"]                     — annotation surface
+        """
+    )
+    suspend fun code_list_classes_in_module(
+        @McpDescription("Module name (matches JetBrains MCP get_project_modules).")
+        moduleName: String,
+        @McpDescription("Optional package-FQN prefix filter. Null/empty matches all.")
+        packagePrefix: String? = null,
+        @McpDescription("Include test source roots. Default false.")
+        includeTests: Boolean = false,
+        @McpDescription("Include generated source roots (build/, .gen/, kapt). Default true.")
+        includeGenerated: Boolean = true,
+        @McpDescription("Allowed kinds: 'class','interface','enum','record','annotation','kotlinFileFacade'.")
+        kinds: List<String> = listOf("class", "interface", "enum", "record", "annotation", "kotlinFileFacade"),
+        @McpDescription("Cap on results. Default 1000, hard upper bound 5000.")
+        limit: Int = 1000,
+    ): ListClassesResponse {
+        val project = requireProject()
+        // clampLimit validates BEFORE entering the read action so an IllegalArgumentException
+        // surfaces directly to the MCP caller instead of being wrapped in a ReadAction failure.
+        ClassCatalog.clampLimit(limit)
+        return readActionBlocking {
+            val (response, lookup) = ClassCatalog.listInModule(
+                project = project,
+                moduleName = moduleName,
+                packagePrefix = packagePrefix?.takeIf { it.isNotEmpty() },
+                includeTests = includeTests,
+                includeGenerated = includeGenerated,
+                kinds = kinds,
+                limit = limit,
+            )
+            if (lookup == ClassCatalog.ModuleLookup.NOT_FOUND) {
+                throw McpExpectedError(
+                    "Module not found: $moduleName. Use get_project_modules to list available modules.",
+                    JsonObject(emptyMap()),
+                )
+            }
+            response
+        }
+    }
+
+    @McpTool(name = "code.list_classes_in_package")
+    @McpDescription(
+        """
+        |Lists all top-level classes in one package FQN, across every module (and optionally
+        |library jars). Strict-by-package; cross-module counterpart of code.list_classes_in_module.
+        |
+        |Use this when: agent asks "what's in com.acme.billing?", "list everything under
+        |java.util (recursive)?", "annotations in javax.persistence?". Cheap probe before
+        |code.get_source / code.list_members.
+        |
+        |Do NOT use this when:
+        |  - You want a module scope — use code.list_classes_in_module.
+        |  - You want fuzzy / partial-name search — use JetBrains' search_symbol.
+        |  - The package doesn't exist (returns empty, not an error — check `total`).
+        |
+        |Returns: { scope, classes: ClassEntry[], total, truncated, timedOut }. Same
+        |ClassEntry shape as code.list_classes_in_module. Anonymous + inner classes excluded.
+        |
+        |Library scope: includeLibraries=false (default) = project sources only. Enabling
+        |it widens to GlobalSearchScope.allScope and can return tens of thousands of classes
+        |(rt.jar alone ~30k). Always pair includeLibraries=true with a narrow package and tight limit.
+        |
+        |Examples:
+        |  packageFqn="com.acme.billing"                                  — direct children
+        |  packageFqn="com.acme.billing", recursive=true                  — whole subtree
+        |  packageFqn="java.util", includeLibraries=true                  — JDK util top level
+        |  packageFqn=""                                                  — default/root package
+        """
+    )
+    suspend fun code_list_classes_in_package(
+        @McpDescription("Fully-qualified package name. '' = default/root package.")
+        packageFqn: String,
+        @McpDescription("Recurse into sub-packages. Default false.")
+        recursive: Boolean = false,
+        @McpDescription("Include library jars (rt.jar alone has ~30k classes). Default false — project sources only.")
+        includeLibraries: Boolean = false,
+        @McpDescription("Allowed kinds: 'class','interface','enum','record','annotation','kotlinFileFacade'.")
+        kinds: List<String> = listOf("class", "interface", "enum", "record", "annotation", "kotlinFileFacade"),
+        @McpDescription("Cap on results. Default 500, hard upper bound 5000.")
+        limit: Int = 500,
+    ): ListClassesResponse {
+        val project = requireProject()
+        ClassCatalog.clampLimit(limit)
+        return readActionBlocking {
+            ClassCatalog.listInPackage(
+                project = project,
+                packageFqn = packageFqn,
+                recursive = recursive,
+                includeLibraries = includeLibraries,
+                kinds = kinds,
+                limit = limit,
             )
         }
     }

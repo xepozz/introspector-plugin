@@ -92,6 +92,62 @@ data class ListMembersResponse(
     val total: Int,
 )
 
+/**
+ * Lightweight textual span for a class declaration in its source file. Offsets are
+ * 0-based UTF-16 chars (matching [com.intellij.openapi.editor.Document]). When the
+ * declaration's range can't be obtained (compiled-only class with no PSI text), the
+ * surrounding [ClassEntry.declarationRange] is null.
+ */
+@Serializable
+data class DeclarationRange(
+    val startOffset: Int,
+    val endOffset: Int,
+)
+
+/**
+ * One row in `code.list_classes_in_module` / `code.list_classes_in_package`. Top-level
+ * classes only — anonymous + inner classes are excluded from v1 (use `code.list_members`
+ * with `kinds=["innerClass"]` for nested types).
+ *
+ * `kind` follows the same vocabulary as [ClassMetadata.kind] plus the synthetic
+ * `kotlinFileFacade` for `FooKt`-style top-level Kotlin function/property holders.
+ *
+ * `byteLength` is the textual file size (UTF-16 char count) — agents budget
+ * `code.get_source` follow-ups against it. Null when the file isn't available.
+ */
+@Serializable
+data class ClassEntry(
+    val fqn: String,
+    val simpleName: String,
+    /** Package FQN; `""` for the default/root package. */
+    val pkg: String,
+    /** "class" | "interface" | "enum" | "record" | "annotation" | "kotlinFileFacade". */
+    val kind: String,
+    val fileUrl: String? = null,
+    val declarationRange: DeclarationRange? = null,
+    val byteLength: Int? = null,
+)
+
+/**
+ * Response shape for both `code.list_classes_in_module` and `code.list_classes_in_package`.
+ *
+ * - `scope` echoes whatever single-string scope identifies the call (module name or
+ *   package FQN) for trace/log readability.
+ * - `total` is the unbounded count BEFORE [limit] was applied. `classes.size <= limit`.
+ * - `truncated=true` when `total > limit` (results were capped).
+ * - `timedOut=true` when the 10s wall-clock deadline fired; results are partial.
+ * - `note` set when the project is in dumb (indexing) mode and results may be stale.
+ */
+@Serializable
+data class ListClassesResponse(
+    val scope: String,
+    val classes: List<ClassEntry>,
+    val total: Int,
+    val truncated: Boolean,
+    val timedOut: Boolean = false,
+    val note: String? = null,
+)
+
 @Serializable
 data class AttachSourcesResponse(
     /** "triggered" — an action was found and dispatched (download is asynchronous).

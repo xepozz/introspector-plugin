@@ -37,3 +37,35 @@ data class FindExtendersOfArgs(
     val target: String,
     val targetKind: String = "auto",         // "extension_point" | "interface" | "auto"
 )
+
+/**
+ * Args for `arch.check_lock_requirements`. Mirrors `psi.find_usages` position semantics —
+ * `target` is mutually exclusive with `fileUrl` + (offset | line+column). The two args
+ * classes (this one and [CheckThreadingRequirementsArgs]) have identical field lists by
+ * design — see `docs/plans/arch-devkit-mirror.md`. They're kept distinct so the KSP doc
+ * processor renders separate `@McpDescription`s for each tool.
+ */
+@Serializable
+data class CheckLockRequirementsArgs(
+    val target: String? = null,
+    val fileUrl: String? = null,
+    val offset: Int? = null,
+    val line: Int? = null,
+    val column: Int? = null,
+    val scope: String = "project",
+    val includeImplementations: Boolean = true,
+    val maxCallSites: Int = 500,
+)
+
+/** Args for `arch.check_threading_requirements`. See [CheckLockRequirementsArgs]. */
+@Serializable
+data class CheckThreadingRequirementsArgs(
+    val target: String? = null,
+    val fileUrl: String? = null,
+    val offset: Int? = null,
+    val line: Int? = null,
+    val column: Int? = null,
+    val scope: String = "project",
+    val includeImplementations: Boolean = true,
+    val maxCallSites: Int = 500,
+)

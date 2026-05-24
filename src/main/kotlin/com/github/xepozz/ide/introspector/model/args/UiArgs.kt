@@ -2,6 +2,10 @@ package com.github.xepozz.ide.introspector.model.args
 
 import kotlinx.serialization.Serializable
 
+// Note: `ui.list_tool_windows` and `ui.list_dialogs` take only inline primitive arguments
+// declared directly on their @McpTool methods (includeInvisible, nameContains, includeInvisible),
+// so they do not need dedicated @Serializable args classes here.
+
 @Serializable
 data class GetUiTreeArgs(
     val maxDepth: Int = 20,

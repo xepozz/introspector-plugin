@@ -7,5 +7,7 @@
         <mcpServer.mcpToolset implementation="com.github.xepozz.ide.introspector.tools.ScreenshotToolset"/>
         <mcpServer.mcpToolset implementation="com.github.xepozz.ide.introspector.tools.ArchitectureToolset"/>
         <mcpServer.mcpToolset implementation="com.github.xepozz.ide.introspector.tools.PsiToolset"/>
+        <mcpServer.mcpToolset implementation="com.github.xepozz.ide.introspector.tools.HealthToolset"/>
+        <mcpServer.mcpToolset implementation="com.github.xepozz.ide.introspector.tools.EditorToolset"/>
     </extensions>
 </idea-plugin>
