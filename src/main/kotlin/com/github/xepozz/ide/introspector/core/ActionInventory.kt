@@ -118,7 +118,7 @@ class ActionInventory {
             }
 
             val anAction: AnAction? = resolveAction(am, id)
-            val isInternal = anAction?.let { runCatching { it.isInternal }.getOrDefault(false) } ?: false
+            val isInternal = anAction?.let { isInternalAction(it) } ?: false
 
             if (!key.includeInternal && isInternal) continue
 
@@ -143,6 +143,15 @@ class ActionInventory {
         val total = maxOf(matchedCount, out.size)
         return ListActionsResponse(actions = out, total = total, truncated = truncated)
     }
+
+    /**
+     * `AnAction.isInternal()` was removed from the 252 platform — `<action internal="true"/>`
+     * is now surfaced via the `@ApiStatus.Internal` annotation on the action class itself.
+     * Check that annotation reflectively so we don't depend on the old method signature.
+     */
+    private fun isInternalAction(action: AnAction): Boolean = runCatching {
+        action.javaClass.isAnnotationPresent(org.jetbrains.annotations.ApiStatus.Internal::class.java)
+    }.getOrDefault(false)
 
     private fun resolveAction(am: ActionManager, id: String): AnAction? {
         // Try `getActionOrStub` reflectively — it's `@ApiStatus.Internal` and not part of

@@ -42,7 +42,13 @@ dependencies {
     // independent KSerializer classloaders, which makes serializerOrNull(KType) return null
     // for our @Serializable data classes when MCP's reflection-based bridge looks them up,
     // and the bridge then throws "Result type X is not serializable".
-    compileOnly("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+    // kotlinx-serialization-json 1.10+ ships modules compiled with Kotlin 2.2/2.3 metadata,
+    // which the Kotlin 2.1.20 compiler / KSP processor cannot read ("incompatible version of
+    // Kotlin … metadata is 2.3.0, expected version is 2.1.0"). 1.7.3 is the last release
+    // whose metadata is compatible with the Kotlin 2.1.20 toolchain we are pinned to here.
+    // The runtime copy still comes from the IDE / mcpServer plugin (compileOnly), so this
+    // version only constrains what KSerializer API surface we use at compile time.
+    compileOnly("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
     // Phase 2: Kotlin runtime execution via JSR-223 ScriptEngine.
     // kotlin-scripting-jsr223 pulls kotlin-compiler-embeddable transitively, which gives us
@@ -158,6 +164,10 @@ dependencies {
     add(testScripting.implementationConfigurationName, "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
     // The whole point of this source set: keep scripting on the runtime classpath.
     add(testScripting.runtimeOnlyConfigurationName, "org.jetbrains.kotlin:kotlin-scripting-jsr223:2.1.20")
+    // Main code is compiled against `compileOnly("…kotlinx-serialization-json…")` because the
+    // IDE provides the runtime copy. `testScripting` does NOT run inside the IDE — provide the
+    // serialization runtime explicitly so @Serializable model classes can initialise.
+    add(testScripting.runtimeOnlyConfigurationName, "org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 }
 
 val testScriptingTask = tasks.register<Test>("testScripting") {

@@ -6,19 +6,23 @@ Generated from the `@McpTool` / `@McpDescription` annotations on the `McpToolset
 classes by a KSP processor (`doc-processor/`) that runs as part of `compileKotlin`.
 To refresh: any `./gradlew build` (or `./gradlew compileKotlin`) regenerates this file.
 
-**Total tools:** 32
+**Total tools:** 45
 
 ## Tools by group
 
-### `arch.*` (7)
+### `arch.*` (11)
 
 - [`arch.check_lock_requirements`](#arch-checklockrequirements)
 - [`arch.check_threading_requirements`](#arch-checkthreadingrequirements)
 - [`arch.find_extenders_of`](#arch-findextendersof)
+- [`arch.get_extension_point_details`](#arch-getextensionpointdetails)
 - [`arch.get_plugin_details`](#arch-getplugindetails)
+- [`arch.list_actions`](#arch-listactions)
 - [`arch.list_extension_points`](#arch-listextensionpoints)
 - [`arch.list_extensions_for_ep`](#arch-listextensionsforep)
+- [`arch.list_listeners`](#arch-listlisteners)
 - [`arch.list_plugins`](#arch-listplugins)
+- [`arch.list_services`](#arch-listservices)
 
 ### `code.*` (6)
 
@@ -44,25 +48,37 @@ To refresh: any `./gradlew build` (or `./gradlew compileKotlin`) regenerates thi
 - [`health.indexing_status`](#health-indexingstatus)
 - [`health.memory`](#health-memory)
 
-### `psi.*` (4)
+### `log.*` (2)
+
+- [`log.errors_since`](#log-errorssince)
+- [`log.tail`](#log-tail)
+
+### `psi.*` (8)
 
 - [`psi.find_usages`](#psi-findusages)
+- [`psi.get_outline`](#psi-getoutline)
 - [`psi.get_references`](#psi-getreferences)
 - [`psi.get_structure`](#psi-getstructure)
+- [`psi.goto_implementation`](#psi-gotoimplementation)
 - [`psi.list_open_files`](#psi-listopenfiles)
+- [`psi.symbol_at`](#psi-symbolat)
+- [`psi.type_hierarchy`](#psi-typehierarchy)
 
-### `screenshot.*` (2)
+### `screenshot.*` (4)
 
 - [`screenshot.capture`](#screenshot-capture)
 - [`screenshot.crop`](#screenshot-crop)
+- [`screenshot.diff`](#screenshot-diff)
+- [`screenshot.highlight`](#screenshot-highlight)
 
-### `ui.*` (7)
+### `ui.*` (8)
 
 - [`ui.find_by_coordinates`](#ui-findbycoordinates)
 - [`ui.find_by_name`](#ui-findbyname)
 - [`ui.find_by_xpath`](#ui-findbyxpath)
 - [`ui.get_properties`](#ui-getproperties)
 - [`ui.get_tree`](#ui-gettree)
+- [`ui.invoke_action_on`](#ui-invokeactionon)
 - [`ui.list_dialogs`](#ui-listdialogs)
 - [`ui.list_tool_windows`](#ui-listtoolwindows)
 
@@ -202,6 +218,52 @@ Examples:
 
 ---
 
+## `arch.get_extension_point_details`
+
+*ArchitectureToolset*
+
+Returns the full descriptor for ONE Extension Point: kind, bean class XML schema
+(for BEAN_CLASS EPs) or interface method signatures (for INTERFACE EPs), declared-in
+plugin, area, and dynamic flag. This is the "how do I plug into EP X?" tool — it
+surfaces every @Attribute / @Property / @Tag / @RequiredElement annotation on the
+bean so an agent can generate a correct <extension> XML snippet without grepping
+IntelliJ Community sources.
+
+Use this when: a user asks "what fields does ToolWindowEP take?", "is `id` required
+on com.intellij.applicationConfigurable?", "what methods do I implement for EP X?",
+or you've identified an EP via arch.list_extension_points and need to scaffold an
+extension for it.
+
+Do NOT use this when: you want every EP at once (arch.list_extension_points), the
+list of existing contributors (arch.list_extensions_for_ep), or the source of a
+specific implementation class (code.get_class_source).
+
+Returns: ExtensionPointDetails { name, kind ('INTERFACE'|'BEAN_CLASS'),
+interfaceOrBeanClass (FQCN), declaredByPluginId, declaredByPluginName, dynamic,
+area ('application'|'project'), beanSchema?: { className, fields: [{ name,
+xmlAttributeName, xmlTagName, type, required, defaultValue, deprecated }] },
+interfaceMethods?: [{ name, signature, returnType, deprecated }], registeredCount?: int }.
+Returns null when the EP name is not registered in any open area.
+
+Examples:
+  name="com.intellij.toolWindow"                                        — bean schema for ToolWindowEP (id/anchor/factoryClass/icon…)
+  name="com.intellij.applicationConfigurable", includeRegisteredCount=true — Configurable EP schema + how many are registered
+  name="com.intellij.codeInsight.lineMarkerProvider"                    — INTERFACE EP — lists LineMarkerProvider methods
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `name` | `String` | Fully qualified EP name as returned by arch.list_extension_points, e.g. 'com.intellij.toolWindow', 'com.intellij.applicationConfigurable'. Required. |
+| `includeBeanSchema` | `Boolean` | For BEAN_CLASS EPs, harvest the bean class's @Attribute / @Property / @Tag / @RequiredElement annotations into beanSchema. Default true. Set false when you only need kind + declaring plugin. |
+| `includeInterfaceMethods` | `Boolean` | For INTERFACE EPs, list the extension interface's public abstract methods (signature + return type). Default true. |
+| `includeRegisteredCount` | `Boolean` | Include the live adapter count (ep.size() — does NOT instantiate extensions) under registeredCount. Default false; flip on when you want the count without a follow-up arch.list_extension_points call. |
+| `maxFields` | `Int` | Hard cap on bean fields / interface methods returned (per side). Default 200 — protects against pathological beans inheriting from heavy hierarchies. |
+
+**Returns:** `ExtensionPointDetails?`
+
+---
+
 ## `arch.get_plugin_details`
 
 *ArchitectureToolset*
@@ -243,6 +305,57 @@ Examples:
 | `includeActions` | `Boolean` | Include the plugin's action ids. Default false — slow on plugins with many actions (com.intellij has ~3000). |
 
 **Returns:** `PluginDetails`
+
+---
+
+## `arch.list_actions`
+
+*ArchitectureToolset*
+
+Global action catalog with fuzzy search — the JSON equivalent of Ctrl+Shift+A "Find
+Action" across every plugin. Each result carries id, display text, description,
+owning plugin id/name, formatted keyboard shortcut(s), the action-group path
+(category), the icon path, and an isInternal flag.
+
+Use this when: you need to discover an action id to call later, find which plugin
+owns a feature ("who provides 'Run Anything'?"), audit shortcut bindings, or list
+all actions a specific plugin contributes. Pairs with arch.get_plugin_details for
+the inverse direction (plugin → its actions).
+
+Do NOT use this when: you want to *invoke* an action (use ui.invoke_action_on or the
+JetBrains built-in execute_action_by_id), or you already have a plugin id and want
+that plugin's full inventory (arch.get_plugin_details(includeActions=true)). Do not
+use this to enumerate action *groups* — groups are out of scope here, query their
+child action ids instead.
+
+Returns: { actions: ActionInfo[], total: int, truncated: bool }. `total` is the
+count BEFORE applying `limit`; `truncated=true` means either the limit was hit OR
+the 10 s hard timeout fired and the catalog walk stopped early.
+
+Performance: vanilla IDEA has ~3000+ registered actions. When `query` looks like a
+prefix (alphanumeric, no wildcards), the lookup uses ActionManagerEx.getActionIdList
+at the registry level (no AnAction instantiation). Otherwise we stream the full id
+list applying filters lazily and stop at `limit`. Results are cached in a TtlCache
+keyed on (query, providedByPluginId, includeInternal) for 60 s. Even with these
+optimisations, prefer a non-null `query` whenever possible — an unfiltered call
+with limit=200 still walks every id.
+
+Examples:
+  query="Refactor"                              — every action whose id or text contains "Refactor"
+  query="Editor", providedByPluginId="com.intellij" — platform editor actions only
+  providedByPluginId="org.jetbrains.kotlin"      — every Kotlin-plugin action
+  query="Run", includeInternal=true, limit=500  — Run* actions, internal included
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `query` | `String?` | Case-insensitive substring on action id + display text. When alphanumeric (regex ^[A-Za-z0-9_.]+$) triggers the registry prefix fast-path. Null = no query filter. |
+| `providedByPluginId` | `String?` | Exact match on plugin id (e.g. 'com.intellij', 'org.jetbrains.kotlin'). Restricts the candidate set via ActionManagerEx.getPluginActions — the cheapest filter when known. |
+| `includeInternal` | `Boolean` | Include actions marked <action internal="true"/> or @ApiStatus.Internal. Default false (end-user noise filter). |
+| `limit` | `Int` | Cap on returned actions. Coerced into 1..2000. Default 200. |
+
+**Returns:** `ListActionsResponse`
 
 ---
 
@@ -332,6 +445,51 @@ Examples:
 
 ---
 
+## `arch.list_listeners`
+
+*ArchitectureToolset*
+
+Enumerates MessageBus listeners declared in plugin.xml across all loaded plugins
+(both <applicationListeners> and <projectListeners>). For each declaration you get
+the topic class FQN, the listener implementation FQN, its scope, the contributing
+plugin id, and the test-mode / headless-mode activation flags.
+
+Use this when: a plugin developer wants to know "who is subscribed to topic X?",
+"what listeners does plugin Y register?", or "why isn't my listener firing — is
+something else consuming the event first?". Also useful for auditing
+unexpected reactions to platform topics (BulkFileListener, FileEditorManagerListener,
+DumbService.DUMB_MODE, VirtualFileManager.VFS_CHANGES, …).
+
+Do NOT use this when: you want listeners registered programmatically via
+MessageBus.connect().subscribe(...) — those are NOT declared in plugin.xml and are
+out of scope (see the platform's MessageBusImpl for that route). Also don't use
+this to invoke or fire events — read-only inventory only.
+
+Returns: { listeners: ListenerInfo[], total: int }. Each ListenerInfo carries
+topicClass (FQN), listenerClass (FQN), scope ('application'|'project'),
+providedByPluginId, providedByPluginName, activeInTestMode, activeInHeadlessMode.
+Vanilla IDEA Community has ~200-400 plugin.xml-declared listeners — narrow with
+topicContains or providedByPluginId before reading the whole response.
+
+Examples:
+  topicContains="FileEditorManagerListener"             — who watches file-editor events
+  scope="project"                                       — project-scope listeners only
+  providedByPluginId="org.jetbrains.kotlin"             — every listener the Kotlin plugin registers
+  topicContains="VFS_CHANGES", scope="application"      — app-scope VFS subscribers
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `topicContains` | `String?` | Case-insensitive substring filter on the topic class FQN (e.g. 'FileEditorManagerListener', 'VFS_CHANGES', 'BulkFileListener'). Strongly recommended — full list can be 400+. |
+| `providedByPluginId` | `String?` | Restrict to listeners declared by this plugin id exactly (e.g. 'com.intellij', 'org.jetbrains.kotlin'). Get ids from arch.list_plugins. |
+| `scope` | `String` | 'application', 'project', or 'both'. Default 'both'. |
+| `limit` | `Int` | Cap on returned listeners. Default 300. |
+
+**Returns:** `ListListenersResponse`
+
+---
+
 ## `arch.list_plugins`
 
 *ArchitectureToolset*
@@ -364,6 +522,61 @@ Examples:
 | `nameOrIdContains` | `String?` | Case-insensitive substring filter on plugin name OR plugin id. |
 
 **Returns:** `ListPluginsResponse`
+
+---
+
+## `arch.list_services`
+
+*ArchitectureToolset*
+
+Enumerates IntelliJ services (application/project/module-scoped) declared by every
+loaded plugin. Per service: serviceInterface FQN, serviceImplementation FQN, scope,
+preload mode, test/headless/overriding implementations, and the contributing plugin id.
+Reads from PluginDescriptor.containerDescriptor.services — never instantiates a service
+(safe even for half-broken third-party plugins).
+
+Use this when: a user asks "what services does plugin X expose?", "where is the
+implementation of service Y?", "which services are application-level vs project-level?",
+"what preloads at startup?" — i.e. service-layer plugin-architecture exploration. This
+is the service-shaped counterpart of arch.list_extension_points.
+
+Follow-up tools:
+  - arch.get_plugin_details      — full inventory for one plugin (EPs + extensions)
+  - arch.list_extension_points   — for non-service extensibility hooks
+
+Do NOT use this when: you want extension points (use arch.list_extension_points),
+plugin metadata (arch.list_plugins / arch.get_plugin_details), or actions
+(arch.list_actions). Service implementation classes are NOT auto-instantiated by this
+tool: do not use it to "fetch" a service instance. @Service-annotated light services
+registered without plugin.xml are NOT enumerated here (see arch.find_extenders_of).
+
+Returns: { services: ServiceInfo[], total: int } where each ServiceInfo has
+serviceInterface (FQCN; equals serviceImplementation when XML omits the interface),
+serviceImplementation (FQCN), scope ('application'|'project'|'module'), preload
+('FALSE'|'TRUE'|'NOT_HEADLESS'|'NOT_LIGHT_EDIT'|'AWAIT'), overrides (boolean),
+testServiceImplementation (FQCN or null), headlessImplementation (FQCN or null),
+providedByPluginId, providedByPluginName.
+
+Vanilla IDEA Community has 1000+ services — narrow with nameContains ("Psi", "Project",
+"Editor") and/or providedByPluginId before reading, or rely on limit (default 500).
+
+Examples:
+  scope="application", nameContains="Psi"                   — application-scoped PSI services
+  providedByPluginId="org.jetbrains.kotlin"                 — every service the Kotlin plugin registers
+  scope="project", onlyPreloaded=true                       — project services that preload eagerly
+  nameContains="ToolWindow", scope="all"                    — services matching ToolWindow at any scope
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `scope` | `String` | Service scope filter: 'application', 'project', 'module', or 'all'. Default 'all'. |
+| `providedByPluginId` | `String?` | Restrict to services contributed by this plugin id (e.g. 'com.intellij', 'org.jetbrains.kotlin'). |
+| `nameContains` | `String?` | Case-insensitive substring filter on serviceInterface OR serviceImplementation FQN. Strongly recommended — IDEA ships 1000+ services. |
+| `onlyPreloaded` | `Boolean` | Include services with preload != FALSE only. Default false. |
+| `limit` | `Int` | Cap on returned services. Default 500. |
+
+**Returns:** `ListServicesResponse`
 
 ---
 
@@ -945,6 +1158,101 @@ Examples:
 
 ---
 
+## `log.errors_since`
+
+*LogToolset*
+
+Returns WARN+ / ERROR entries from idea.log since a timestamp (or last N
+minutes). Stripped-down, error-focused: groups Java stacktrace continuations
+('\tat …', 'Caused by …', '\t… more') into the preceding ERROR so each
+exception is one ErrorEntry with a full stacktrace string.
+
+Use this when: 'what failed since I clicked Build?', 'any errors in the last 5
+minutes?', triaging a flaky session. Faster than log.tail+filter for 'show me
+errors' because it caps to WARN+ at parse time and short-circuits on time.
+
+Do NOT use this when: you want raw last-N lines (log.tail), or need
+DEBUG/TRACE entries (also log.tail).
+
+Returns: { since, errors: ErrorEntry[], total, truncated, redacted } where
+ErrorEntry = { timestamp, thread, severity, category, message, stacktrace
+(present when groupByThrowable=true and continuations attached, else null),
+throwableClass (parsed from 'foo.Bar.Baz: …' prefix, else null), raw (joined
+original lines) }. `redacted=true` if a secret pattern was masked.
+
+Time parsing: 'yyyy-MM-ddTHH:mm:ss' in JVM default zone, optional offset/'Z'.
+Log timestamps carry no zone — comparison is in JVM zone.
+
+Rotation: walks idea.log + idea.log.1, .2 … as needed (cap 5 rotations, 8 MB
+cumulative budget) when the cutoff predates the current log's first line.
+
+Examples:
+  lastMinutes=10                            — errors in last 10 min
+  sinceIsoTimestamp="2026-05-24T14:00:00"   — since 2 pm today
+  minSeverity="ERROR", limit=20             — only true errors, top 20
+  groupByThrowable=false                    — don't collapse stacktraces
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `sinceIsoTimestamp` | `String?` | ISO-8601 timestamp ('2026-05-24T14:30:00' or with offset). Null = use lastMinutes. |
+| `lastMinutes` | `Int?` | Window in minutes when sinceIsoTimestamp is null. Default 30, hard max 1440. |
+| `minSeverity` | `String` | Minimum severity: WARN\|ERROR. Default WARN. INFO/DEBUG/TRACE rejected — use log.tail. |
+| `limit` | `Int` | Cap on returned entries. Default 100, hard max 1000. |
+| `groupByThrowable` | `Boolean` | Collapse '\tat …', 'Caused by …', '\t… N more' continuations into the preceding ERROR's stacktrace. Default true. |
+| `maxBytes` | `Int` | Response cap in UTF-8 bytes. Default 131072, hard max 524288. |
+
+**Returns:** `LogErrorsSinceResponse`
+
+---
+
+## `log.tail`
+
+*LogToolset*
+
+Returns the last N lines of the IDE's idea.log, optionally filtered by
+severity, category substring, or a Java regex. Tails efficiently — reads only
+the last ~1 MB from the end, even when idea.log is hundreds of MB. Never
+instantiates services, never touches PSI, no EDT — pure I/O.
+
+Use this when: debugging plugin behavior, reading the ide-introspector-audit
+entries written by exec.execute_kotlin_in_ide, watching recent output after an
+action, hunting an exception by category, or grepping for a message.
+
+Do NOT use this when: you only want errors/warnings since a time (use
+log.errors_since — it groups stacktraces), or you want logs from a different
+IDE/user — this reads only PathManager.getLogPath()/idea.log.
+
+Returns: { logPath, lines: LogLine[], totalLinesScanned, truncated, redacted }
+where LogLine = { timestamp ('yyyy-MM-dd HH:mm:ss,SSS'), thread, severity,
+category, message, raw, parsed }. Stacktrace continuation lines are separate
+LogLine entries with parsed=false; for grouping use log.errors_since.
+`redacted=true` if a secret pattern was masked.
+
+Rotation: only current idea.log is read; older idea.log.1 etc. are ignored
+even when the current file has fewer than `lines` lines after fresh rotation.
+
+Examples:
+  lines=200                                  — last 200 lines, no filter
+  lines=500, severity="WARN"                 — last 500 WARN-or-worse
+  categoryContains="ide-introspector-audit"  — our own audit trail
+  regex="ClassNotFound|NoSuchMethod"         — linkage failures
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `lines` | `Int` | Number of lines to return from the end of idea.log. Default 200, hard max 5000. |
+| `categoryContains` | `String?` | Case-insensitive substring filter on the log category. Null = no filter. |
+| `severity` | `String?` | Minimum severity to include: TRACE\|DEBUG\|INFO\|WARN\|ERROR. Null = include all. |
+| `regex` | `String?` | Java regex matched against the raw line via find(). Per-line 50 ms timeout — catastrophic patterns skip the filter. |
+| `maxBytes` | `Int` | Response cap in UTF-8 bytes. Default 65536, hard max 524288. |
+
+**Returns:** `LogTailResponse`
+
+---
+
 ## `psi.find_usages`
 
 *PsiToolset*
@@ -1012,6 +1320,58 @@ Examples:
 | `groupByFile` | `Boolean` | Group hits by fileUrl into byFile[] instead of a flat usages[] list. Default false. |
 
 **Returns:** `FindUsagesResponse`
+
+---
+
+## `psi.get_outline`
+
+*PsiToolset*
+
+Returns the Structure View / Outline of a file — only top-level and nested declarations
+(classes, interfaces, methods, fields, properties, top-level functions) as a tree. Skips
+bodies, statements, expressions, comments — about an order of magnitude cheaper than
+psi.get_structure. Matches what the Structure tool window displays.
+
+Use this when:
+  - The user asks "what methods are in this file?" / "show me the structure of foo.kt".
+  - You want a navigable index of declarations before drilling in with
+    code.get_class_source or psi.symbol_at.
+  - You need a per-language outline that respects language structure-view contributions.
+
+Do NOT use this when:
+  - You need the AST including expressions / tokens (use psi.get_structure).
+  - You need one specific symbol (use psi.symbol_at).
+  - The file is binary / plain text without a structure view — the response will be
+    empty with a warning.
+
+Backed by IntelliJ's `StructureViewBuilder` / `StructureViewModel` — the same per-language
+extension that powers the Structure tool window. Each language plugin contributes its
+own treeBuilder.
+
+Returns: GetOutlineResponse { fileUrl, fileType, language, nodes: OutlineNode[], nodeCount,
+truncated, warnings }. Each OutlineNode carries name, kind (same taxonomy as
+psi.symbol_at), fqn, psiClass, declarationRange, modifiers, returnType (methods),
+typeText (fields/properties), children[].
+
+Cost: O(declarations). Capped at maxNodes (default 500).
+
+Examples:
+  fileUrl=null                              — outline of active tab
+  fileUrl="file:///…/Foo.kt"                — explicit file
+  includeFields=false                       — methods-only outline
+  includeInherited=true                     — fold in superclass members
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `fileUrl` | `String?` | VFS URL of the file. null → active editor tab. |
+| `includeFields` | `Boolean` | Include fields/properties. Default true. |
+| `includeInherited` | `Boolean` | Include inherited members. Default false. |
+| `maxDepth` | `Int` | Max outline depth. Default 6. |
+| `maxNodes` | `Int` | Hard cap on outline nodes. Default 500. |
+
+**Returns:** `GetOutlineResponse`
 
 ---
 
@@ -1134,6 +1494,60 @@ Examples:
 
 ---
 
+## `psi.goto_implementation`
+
+*PsiToolset*
+
+Returns every concrete implementation / override of the symbol at a position —
+interfaces and abstract classes resolve to concrete extenders, abstract /
+interface methods resolve to concrete overrides. Equivalent to IntelliJ's
+Ctrl+Alt+B "Goto Implementation".
+
+Use this when:
+  - You see an interface / abstract method and need the concrete implementors.
+  - The agent is tracing a call graph through an abstraction boundary.
+  - You want "what overrides this method?" without the noise of usages /
+    reference sites that psi.find_usages would return.
+
+Do NOT use this when:
+  - You want call sites of a method — use psi.find_usages.
+  - You want a multi-level type tree — use psi.type_hierarchy.
+  - The caret is on a concrete final method — there are no overrides.
+
+Position: pass `offset` OR `line`+`column`. The caret may be on a class /
+interface decl or ref (returns subclasses / implementors), or on a method decl
+or call site (returns overriding methods). Reported in `target.kind`
+("class" | "method").
+
+Scope (default "project"): "project" (default — matches Ctrl+Alt+B), "all"
+(includes library sources; on JDK / platform symbols can saturate the 10s
+timeout — warning appended), "file" (rare).
+
+Returns: { target: ImplementationTarget, implementations: ImplementationInfo[],
+scope, total, truncated, warnings[] }. Sorted by (fileUrl, range). For method
+targets `signature` uses the *erasure* shown in the overrider's source — no
+cross-boundary generic unification.
+
+Examples:
+  fileUrl=null, line=10, column=18         — overrides of method at row 10
+  fileUrl=null, line=5,  column=12         — implementors of interface at row 5
+  scope="all", maxResults=50               — include library overrides, capped
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `fileUrl` | `String?` | VFS URL of the file. null → active editor tab. |
+| `offset` | `Int?` | Document offset of the caret. Alternative to line+column. |
+| `line` | `Int?` | 1-based line number. Alternative to `offset`. |
+| `column` | `Int?` | 1-based column number. Pair with `line`. |
+| `scope` | `String` | "project" (default — matches Ctrl+Alt+B) / "all" (slow on hot symbols) / "file" (rare). |
+| `maxResults` | `Int` | Hard cap on returned implementations. Default 200. |
+
+**Returns:** `GotoImplementationResponse`
+
+---
+
 ## `psi.list_open_files`
 
 *PsiToolset*
@@ -1165,6 +1579,131 @@ Examples:
   (no args)   — list open tabs, identify the focused tab, return urls for follow-ups
 
 **Returns:** `OpenFilesResponse`
+
+---
+
+## `psi.symbol_at`
+
+*PsiToolset*
+
+Returns ONE compact description of the symbol at a given position. Cheap one-shot:
+no full PSI walk, no project-wide search. Equivalent to JetBrains' `get_symbol_info`
+but with a richer kind taxonomy and explicit reference-vs-declaration disambiguation.
+
+Use this when:
+  - The user asks "what is this thing?" / "what's under the cursor?".
+  - You want a single FQN before calling psi.find_usages or code.get_class_source.
+  - You need to disambiguate "cursor on a usage vs. on the declaration itself" —
+    `isReference` answers this; when true, name/kind/fqn describe the resolved DECLARATION.
+
+Do NOT use this when:
+  - You need every reference in the file (use psi.get_references with scope="file").
+  - You want the full PSI subtree at this position (use psi.get_structure).
+  - You want all declarations in the file (use psi.get_outline).
+
+Position: pass `offset` OR `line`+`column` (1-based).
+
+Returns: SymbolAtResponse { fileUrl, offset, position {line,column}, symbol: SymbolInfo? }.
+SymbolInfo carries:
+  - name                — simple name; null for anonymous
+  - kind                — class | interface | enum | annotation | record | object |
+                          companion | method | constructor | field | property |
+                          parameter | variable | typeAlias | enumConstant | import |
+                          label | unknown
+  - fqn                 — FQN for top-level / member declarations; null for locals
+  - psiClass            — simple PSI class name ("KtNamedFunction", "PsiMethod")
+  - declarationRange    — absolute range of the DECLARATION in its file
+  - declarationFileUrl  — VFS URL of the declaration's file (may differ from request
+                          fileUrl when isReference=true — e.g. a jar:// URL)
+  - containingDeclarationName — enclosing method/class/file name for context
+  - modifiers           — PSI modifier set (public/protected/private/static/final/...)
+  - returnType          — only for method/constructor
+  - typeText            — only for field/property/variable/parameter
+  - isReference         — true if cursor is on a USAGE; name/kind/fqn describe the
+                          resolved declaration. false if cursor is on the declaration itself.
+  - docText             — KDoc / JavaDoc snippet, truncated. Null when includeDoc=false
+                          or no doc present. Raw text — markdown is not rendered.
+
+When the position resolves to nothing (whitespace, comment, EOF, binary file):
+symbol = null with a warning.
+
+Examples:
+  fileUrl=null, line=12, column=8     — symbol under caret at row 12 col 8 of active tab
+  fileUrl="file:///…/Foo.kt", offset=420
+  includeDoc=false                    — skip KDoc lookup for speed
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `fileUrl` | `String?` | VFS URL of the file. null → active editor tab. |
+| `offset` | `Int?` | Document offset. Alternative to line+column. |
+| `line` | `Int?` | 1-based line. Alternative to `offset`. |
+| `column` | `Int?` | 1-based column. Alternative to `offset`. |
+| `includeDoc` | `Boolean` | Include KDoc / JavaDoc text. Default true. |
+| `truncateDocAt` | `Int` | Max chars of doc text. Longer is suffixed with '…'. Default 400. |
+
+**Returns:** `SymbolAtResponse`
+
+---
+
+## `psi.type_hierarchy`
+
+*PsiToolset*
+
+Returns the type hierarchy of a class — supertypes (parents) and/or subtypes
+(implementors / extenders) — as a tree rooted at the target. Mirrors IntelliJ's
+Hierarchy tool window (Ctrl+H, "Type Hierarchy").
+
+Use this when:
+  - The agent needs what a class extends / implements ("up").
+  - The agent needs who extends or implements a class ("down").
+  - A multi-level tree is more useful than a flat list.
+  - Sealed-type exhaustiveness check — direct subtypes included, `isSealed` flagged.
+
+Do NOT use this when:
+  - You only need concrete impls of an interface / abstract member —
+    psi.goto_implementation is more focused and returns method signatures.
+  - You want references / call sites — that is psi.find_usages.
+
+Target: pass `target` (FQN, takes precedence) OR a position (fileUrl + offset
+OR line+column) on a class decl / reference. Anonymous + local classes are
+recognised at a position but never appear as subtype nodes (no FQN).
+
+Scope (default "project"): "file" (rare), "project" (default), "all" (includes
+library sources — for hot types like java.util.List or java.lang.Object the
+subtype walk can saturate the 10s read-action timeout; a warning is appended).
+
+Caps: maxDepth (5) and maxNodes (200) bound the walk. On a cap, `truncated`
+is set and the cut branch's leaf carries `childrenTruncated=true`.
+
+Returns: { target: HierarchyClassRef, supertypes: HierarchyNode?, subtypes:
+HierarchyNode?, direction, scope, truncated, warnings[] }. Each HierarchyNode
+has `node` + `children[]` (parents for supertypes, child classes for subtypes).
+java.lang.Object is included as supertype root when walking "up" but its
+subtype walk is always rejected (would be the world).
+
+Examples:
+  target="com.intellij.openapi.editor.Editor"         — both directions, project
+  target="java.util.List", direction="up"             — super-interfaces only
+  fileUrl=null, line=42, column=14, direction="down"  — subtypes under caret
+  target="com.acme.Sealed", direction="down"          — exhaustive sealed list
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `target` | `String?` | FQN of the target class (e.g. "com.intellij.openapi.editor.Editor"). Takes precedence over the positional args. |
+| `fileUrl` | `String?` | VFS URL of the file holding the target. null → active editor tab. Only used when `target` is null. |
+| `offset` | `Int?` | Document offset of the caret. Used when `target` is null. Alternative to line+column. |
+| `line` | `Int?` | 1-based line number. Used when `target` is null. Alternative to `offset`. |
+| `column` | `Int?` | 1-based column number. Used when `target` is null. Pair with `line`. |
+| `direction` | `String` | "up" (supertypes), "down" (subtypes), or "both" (default). |
+| `scope` | `String` | "project" (default) / "all" (includes library sources, may time out on hot types) / "file" (rare). |
+| `maxDepth` | `Int` | Max tree depth from the target (1..20). Default 5. |
+| `maxNodes` | `Int` | Hard cap on the total node count. Default 200. |
+
+**Returns:** `TypeHierarchyResponse`
 
 ---
 
@@ -1249,6 +1788,111 @@ Examples:
 | `coordinateSpace` | `String` | 'frame' (default, relative to active IDE frame) or 'screen' (virtual desktop). |
 | `format` | `String` | Image format. Only 'png' supported in v1. |
 | `scale` | `Double` | Post-render scale factor applied before encoding. |
+
+**Returns:** `ImagePayload`
+
+---
+
+## `screenshot.diff`
+
+*ScreenshotToolset*
+
+Pixel-diff two base64-encoded PNGs (typically a 'before' and 'after' from two
+prior screenshot.capture calls) and return a composite image highlighting changed
+pixels plus structured diff stats. Pure CPU — no EDT, no IDE state touched.
+
+The output is a desaturated, dimmed version of 'after' with differing pixels
+tinted in highlightColor. A bbox is computed for the smallest axis-aligned
+rectangle containing every differing pixel (null when no pixels differ).
+
+Use this when: an agent needs to verify a UI change had a visible effect ("did
+Toggle Sidebar actually toggle it?"), localize the changed region of a screen
+before zooming in, or compute a quick "% changed" sanity number before spending
+tokens on a vision pass.
+
+Do NOT use this when: you want a fresh screenshot (use screenshot.capture), you
+want to highlight a known component (use screenshot.highlight — no diff needed),
+or you want OCR / semantic comparison (this is pixel math, not vision).
+
+tolerance is per-channel (R/G/B/A independently). 0 = exact match required; 8
+(default) absorbs subpixel-rendering jitter and JBR HiDPI antialiasing noise.
+sizeMismatchPolicy: 'resize' (default, safe for HiDPI/window-resize), 'pad' (top-
+left align, faithful but inflates 'changed' regions), 'error' (reject).
+
+Returns: { mimeType:"image/png", width, height, base64, warnings:string[],
+totalPixels:int, differingPixels:int, diffPercentage:double,
+bbox:{x,y,width,height}? }.
+
+Examples:
+  before=<b64>, after=<b64>                                    — defaults
+  before=<b64>, after=<b64>, tolerance=0                       — exact match
+  before=<b64>, after=<b64>, sizeMismatchPolicy="error"        — strict sizes
+  before=<b64>, after=<b64>, highlightColor="#FFFF00",
+    baseTransparency=0.2f                                      — yellow on dark
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `before` | `String` | Base64-encoded PNG of the 'before' state (typically a prior screenshot.capture.base64). |
+| `after` | `String` | Base64-encoded PNG of the 'after' state. |
+| `tolerance` | `Int` | Per-channel tolerance (R/G/B/A). 0 = exact, 8 (default) masks AA jitter. Clamped 0..255. |
+| `highlightColor` | `String` | CSS hex / named color for the highlight tint over changed pixels. Invalid → red + warning. |
+| `baseTransparency` | `Float` | Opacity of the desaturated 'after' base behind the highlight (0.0..1.0). Clamped. |
+| `sizeMismatchPolicy` | `String` | 'resize' (default; bilinear, HiDPI/window-resize safe), 'pad' (top-left), 'error' (reject). |
+
+**Returns:** `ImageDiffPayload`
+
+---
+
+## `screenshot.highlight`
+
+*ScreenshotToolset*
+
+Captures a screenshot of the IDE (target='component'|'active_frame'|'screen') AND
+overlays a colored bounding rectangle around the Swing component identified by
+componentId, optionally with a text label. Returns the same base64-PNG
+ImagePayload as screenshot.capture, downscaled to the MCP response budget.
+
+target options (must match the coordinate space the highlight is drawn in):
+  - "component"    — render only the target component; the box fills it. Cheapest.
+  - "active_frame" — render the focused IDE frame, box at frame-relative bounds
+                     (Component.getLocationOnScreen minus frame origin). Off-screen
+                     components are clipped to the frame edge with a warning.
+  - "screen"       — Robot capture of the virtual desktop with the box at the
+                     component's absolute screen coordinates. The only target that
+                     includes popups / tooltips / floating overlays.
+
+Use this when: the user asks "where is X on screen?", or after a ui.find_by_*
+call you want to visually confirm which component matched, or to annotate a
+screenshot for screenshot-and-narrate workflows.
+
+Do NOT use this when: you just want raw pixels (use screenshot.capture), you want
+a crop centered on the component (use screenshot.crop after ui.get_properties), or
+you need to highlight multiple components in one image (not supported in v1).
+
+Returns: { mimeType:"image/png", width:int, height:int, base64:string,
+warnings:string[] } — same shape as screenshot.capture. warnings includes
+"component clipped to frame", "color parse fell back to red", and the standard
+"image downscaled to fit budget" notices.
+
+Examples:
+  componentId="c_a3f2e1b8"                                    — red box on active frame
+  componentId="c_a3f2e1b8", color="#33CC33", thickness=5      — fatter green box
+  componentId="c_a3f2e1b8", target="screen", label="OK btn"   — labelled, includes popups
+  componentId="c_a3f2e1b8", target="component", scale=0.5     — component-only, halved
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `componentId` | `String` | ComponentRegistry id (from ui.find_by_* / ui.get_tree). Must still be attached. |
+| `target` | `String` | 'component' \| 'active_frame' \| 'screen' (matches screenshot.capture, minus 'all_frames'). |
+| `color` | `String` | CSS hex (#RRGGBB / #RGB / #RRGGBBAA) or named color. Invalid → red + warning. |
+| `thickness` | `Int` | Source-pixel stroke thickness. Clamped to 1..20. |
+| `label` | `String?` | Optional text label drawn above (or inside-top) of the box. Truncated to 80 UTF-8 bytes; \n/\r collapsed. |
+| `scale` | `Double` | Post-render scale factor applied AFTER overlay so the stroke scales with the image. |
+| `format` | `String` | Image format. Only 'png' supported in v1. |
 
 **Returns:** `ImagePayload`
 
@@ -1457,6 +2101,83 @@ Examples:
 
 ---
 
+## `ui.invoke_action_on`
+
+*UiInspectorToolset*
+
+Invokes an IntelliJ AnAction with a synthetic AnActionEvent whose DataContext is
+rooted at a previously-located Swing component. Equivalent to a real user clicking
+that widget and triggering the named action — but addressable from an MCP agent.
+
+OPT-IN and SECURITY-SENSITIVE. This is a privileged WRITE operation. Actions can
+delete files, run code, push to git, install plugins, refactor, etc. This tool is
+off by default and, when enabled, shows a modal confirmation dialog on every call
+(opt-out only for the rest of the session, never persisted).
+
+Use this when: you've already located the right Swing component via ui.find_by_*
+or ui.get_tree and you need to invoke an action whose data context depends on that
+component (a context-menu action on a tree node, a toolbar button bound to a
+specific panel, an editor action on a specific editor instance).
+
+Do NOT use this when:
+  - You want to invoke an action against whatever currently holds focus — use the
+    JetBrains built-in `execute_action_by_id` MCP tool, it's lighter-weight.
+  - You only need to read UI state (use ui.get_tree / ui.get_properties).
+  - The action you want is destructive (delete, reset, force-push, hard refactor)
+    AND you don't actually need the data context binding — issue the operation
+    via the dedicated MCP tool (VCS / refactor MCPs) which carries its own
+    confirmation UX instead of trusting our generic blocklist.
+  - The user hasn't enabled this tool: it's off by default in
+    Settings → Tools → IDE Introspector → "Allow UI action invocation".
+
+SAFETY MODEL (identical to exec.execute_kotlin_in_ide):
+  1. Off by default. Enable in Settings → Tools → IDE Introspector → "Allow UI
+     action invocation".
+  2. Per-call modal confirmation by default, showing actionId, action text, owning
+     plugin, target component class+id+bounds, and the current project. Opt-out
+     button "Allow for this session" — in-memory only, never written to disk.
+  3. HARD BLOCKLIST of dangerous action-id patterns (*Force*, *Delete*, *Reset*,
+     `Vcs.RefactoringChanges`, `Reset_HEAD`, `Maven.Reimport`, plus user-extendable
+     list in settings) triggers a SECOND confirmation dialog even when the session
+     bypass is active and even when requireConfirmation=false. There is no way to
+     bypass the second confirmation for blocklisted actions.
+  4. Every call recorded to idea.log under category "ide-introspector-audit"
+     (caller, actionId, componentId, component class, outcome, durationMs).
+  5. Hard 10 s execution timeout via onEdtBlocking(10_000). The IDE is not allowed
+     to hang for longer; the action either completes or the call returns
+     ok=false, error="timeout". Note: the action's side effects may continue to
+     run on the EDT after our timeout — this tool measures and reports, it does
+     not actually abort an in-flight action.
+
+Returns: { ok:bool, actionId:string, executed:bool, presentationText:string?,
+durationMs:long, error:string? }. `executed=true` ONLY when the action's
+actionPerformed() was actually invoked; `executed=false` means update() reported
+enabled=false (e.g. wrong context, dumb mode, no project) and we did not fire.
+`ok=false` reflects either user rejection, blocklist double-prompt rejection,
+unknown actionId, dead componentId, timeout, or thrown exception during update/
+perform.
+
+Examples:
+  actionId="Build", componentId="c_a3f2e1b8"
+    — invokes Build against a toolbar button context
+  actionId="QuickJavaDoc", componentId="c_91cd2204"
+    — context action on a tree row in the Project view
+  actionId="EditorChooseLookupItem", componentId="c_55ee0011"
+    — completion popup action targeted at one specific editor
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `actionId` | `String` | Action id registered with ActionManager (e.g. 'Build', 'QuickJavaDoc'). Non-blank. |
+| `componentId` | `String` | Component id from a prior ui.find_by_* / ui.get_tree call in the same IDE session. Format 'c_xxxxxxxx'. |
+| `presentationText` | `String?` | Optional cosmetic override for Presentation.text on the synthetic event — audit + dialog only. Truncated to 200 chars. |
+| `requireConfirmation` | `Boolean` | Force a confirmation prompt even if the session bypass is active. Blocklisted ids ALWAYS double-confirm regardless of this flag. |
+
+**Returns:** `InvokeActionResponse`
+
+---
+
 ## `ui.list_dialogs`
 
 *UiInspectorToolset*
@@ -1491,7 +2212,7 @@ Examples:
 | --- | --- | --- |
 | `includeInvisible` | `Boolean` | Include Dialogs that exist but aren't showing (isShowing==false). Default false. |
 
-**Returns:** `<ERROR TYPE: DialogsResponse>`
+**Returns:** `DialogsResponse`
 
 ---
 
@@ -1529,7 +2250,7 @@ Examples:
 | `includeInvisible` | `Boolean` | Include tool windows that are currently hidden. Default true. |
 | `nameContains` | `String?` | Case-insensitive substring filter on id OR displayName. Null = no filter. |
 
-**Returns:** `<ERROR TYPE: ToolWindowsResponse>`
+**Returns:** `ToolWindowsResponse`
 
 ---
 

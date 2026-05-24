@@ -195,7 +195,7 @@ object PsiOutlineCollector {
         }
 
         // Suppress no-op note about ownIndex — keeps the linter quiet without altering logic.
-        @Suppress("UNUSED_VARIABLE") val _ = ownIndex
+        @Suppress("UNUSED_VARIABLE") val unusedOwnIndex = ownIndex
 
         return OutlineNode(
             name = displayName,

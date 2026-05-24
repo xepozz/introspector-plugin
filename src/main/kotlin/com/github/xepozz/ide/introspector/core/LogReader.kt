@@ -291,14 +291,15 @@ class LogReader(
         for (line in lines) {
             val sev = line.severity ?: continue
             if (severityIndex(sev) < minIdx) continue
+            val throwable = throwableClassOf(line.message)
             out += ErrorEntry(
                 timestamp = line.timestamp,
                 thread = line.thread,
                 severity = sev,
                 category = line.category,
-                message = line.message,
+                message = stripThrowablePrefix(line.message, throwable),
                 stacktrace = null,
-                throwableClass = throwableClassOf(line.message),
+                throwableClass = throwable,
                 raw = line.raw,
             )
         }
@@ -321,14 +322,15 @@ class LogReader(
                     stackBuf.append(lines[j].raw)
                     j++
                 }
+                val throwable = throwableClassOf(line.message)
                 out += ErrorEntry(
                     timestamp = line.timestamp,
                     thread = line.thread,
                     severity = sev,
                     category = line.category,
-                    message = line.message,
+                    message = stripThrowablePrefix(line.message, throwable),
                     stacktrace = if (stackBuf.isEmpty()) null else stackBuf.toString(),
-                    throwableClass = throwableClassOf(line.message),
+                    throwableClass = throwable,
                     raw = rawBuf.toString(),
                 )
                 i = j
@@ -356,6 +358,17 @@ class LogReader(
         val candidate = if (colon > 0) message.substring(0, colon) else message
         if (!candidate.matches(THROWABLE_FQN)) return null
         return candidate
+    }
+
+    /**
+     * When a log line has the shape `foo.Bar.Baz: actual message`, [throwableClassOf]
+     * lifts the FQN out into `throwableClass`. Strip it from the `message` field too so
+     * callers don't have to re-parse it (see `docs/plans/log-group.md`).
+     */
+    private fun stripThrowablePrefix(message: String?, throwable: String?): String? {
+        if (message == null || throwable == null) return message
+        val prefix = "$throwable: "
+        return if (message.startsWith(prefix)) message.substring(prefix.length) else message
     }
 
     private fun parseCutoff(sinceIsoTimestamp: String?, lastMinutes: Int?): LocalDateTime {

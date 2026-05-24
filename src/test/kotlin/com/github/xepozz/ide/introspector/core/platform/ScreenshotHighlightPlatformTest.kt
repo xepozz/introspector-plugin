@@ -5,6 +5,7 @@ import com.github.xepozz.ide.introspector.core.ScreenshotCapture
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import java.awt.Color
+import java.awt.GraphicsEnvironment
 import java.awt.Rectangle
 import javax.swing.JButton
 import javax.swing.JFrame
@@ -29,6 +30,13 @@ import javax.swing.JFrame
 class ScreenshotHighlightPlatformTest : BasePlatformTestCase() {
 
     fun testHighlightAroundComponentBoundsPaintsStroke() {
+        // BasePlatformTestCase derives from JUnit3 — Assume.* throws AssumptionViolated, which
+        // the IntelliJ test logger then surfaces as a failure (it doesn't recognise the JUnit4
+        // skip mechanism). Bail out by returning normally instead.
+        if (GraphicsEnvironment.isHeadless()) {
+            println("skipping ${name}: headless test JVM cannot realise a JFrame")
+            return
+        }
         onEdt {
             val frame = JFrame().apply {
                 defaultCloseOperation = JFrame.DISPOSE_ON_CLOSE

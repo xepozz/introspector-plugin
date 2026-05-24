@@ -118,18 +118,19 @@ object ExtensionPointInspector {
     }
 
     internal fun kindAndClass(ep: ExtensionPoint<*>): Pair<String, String> {
-        // Read `className` and `getKind()` via reflection only — `ExtensionPointImpl` is
-        // marked @ApiStatus.Internal and direct usage trips the plugin verifier. Reflection
-        // also handles platform-version drift (`className` / `myClassName`) and falls back
-        // to the lazily-resolved Class<*> for EPs registered by Class reference.
+        // The 252+ platform dropped the `ExtensionPointImpl.getKind()` accessor; the concrete
+        // subclass — `InterfaceExtensionPoint` vs `BeanExtensionPoint` — is the canonical kind
+        // signal. Try `getKind()` first for older 251.x builds (and for synthetic test EPs that
+        // report custom kinds), then fall back to class-name inspection. Class lookup is via
+        // reflection only — `ExtensionPointImpl` is @ApiStatus.Internal and direct usage trips
+        // the plugin verifier.
         try {
             val kindRaw = ep.javaClass.methods.firstOrNull {
                 it.name == "getKind" && it.parameterCount == 0
-            }?.invoke(ep)
-            val kindStr = when (kindRaw?.toString()) {
-                "INTERFACE" -> "INTERFACE"
-                "BEAN_CLASS" -> "BEAN_CLASS"
-                else -> kindRaw?.toString() ?: "BEAN_CLASS"
+            }?.invoke(ep)?.toString()
+            val kindStr = when {
+                kindRaw != null -> kindRaw   // preserve "INTERFACE" / "BEAN_CLASS" / custom values
+                else -> kindFromClassName(ep.javaClass) ?: "BEAN_CLASS"
             }
             val resolvedName = tryReadClassNameField(ep)
                 ?: tryReadExtensionClass(ep)
@@ -138,6 +139,17 @@ object ExtensionPointInspector {
         } catch (_: Throwable) {
             return "BEAN_CLASS" to "?"
         }
+    }
+
+    private fun kindFromClassName(cls: Class<*>): String? {
+        var c: Class<*>? = cls
+        while (c != null && c != Any::class.java) {
+            val simple = c.simpleName
+            if (simple == "InterfaceExtensionPoint") return "INTERFACE"
+            if (simple == "BeanExtensionPoint") return "BEAN_CLASS"
+            c = c.superclass
+        }
+        return null
     }
 
     /** Last-resort: walk declared fields named "className" / "myClassName" — covers shape drift
@@ -346,10 +358,18 @@ object ExtensionPointInspector {
         val attrAnn = findAnnotation(f, "com.intellij.util.xmlb.annotations.Attribute")
         val tagAnn = findAnnotation(f, "com.intellij.util.xmlb.annotations.Tag")
         val propAnn = findAnnotation(f, "com.intellij.util.xmlb.annotations.Property")
-        val requiredAnn = findAnnotation(f, "com.intellij.util.xmlb.annotations.RequiredElement")
+        // The platform moved @RequiredElement out of `com.intellij.util.xmlb.annotations`
+        // and into `com.intellij.openapi.extensions` somewhere around 252. Accept either FQN
+        // so the harvester works regardless of which IDE version contributed the bean class.
+        val requiredAnn = findAnnotation(f, "com.intellij.openapi.extensions.RequiredElement")
+            ?: findAnnotation(f, "com.intellij.util.xmlb.annotations.RequiredElement")
 
+        // Kotlin's @Deprecated targets PROPERTY (not FIELD), so for `@JvmField var x` the
+        // annotation lands on the synthetic getter/setter — never on the Field itself. Fall
+        // back to the declaring class's matching getter when the field check comes up empty.
         val deprecated = f.isAnnotationPresent(java.lang.Deprecated::class.java) ||
-            findAnnotation(f, "kotlin.Deprecated") != null
+            findAnnotation(f, "kotlin.Deprecated") != null ||
+            isPropertyDeprecated(f)
 
         // Decide xmlAttributeName / xmlTagName.
         var xmlAttribute: String? = null
@@ -435,6 +455,38 @@ object ExtensionPointInspector {
             if (ann.annotationClass.java.name == annotationFqn) return ann
         }
         return null
+    }
+
+    /**
+     * Kotlin's `@Deprecated` lands on the property's getter/setter or on a synthetic
+     * `$annotations` holder method (Kotlin compiler emits it for `@JvmField` properties
+     * whose annotations would otherwise be lost). Walk every declared method on the
+     * class — anything that mentions the field name and carries `@Deprecated`/`kotlin.Deprecated`
+     * counts.
+     */
+    private fun isPropertyDeprecated(f: Field): Boolean {
+        val cls = f.declaringClass ?: return false
+        val cap = f.name.replaceFirstChar { it.uppercase() }
+        val candidateNames = setOf(
+            "get$cap", "is$cap", "set$cap",
+            "${f.name}\$annotations",
+            "${f.name}\$annotations\$kotlin",
+        )
+        for (m in cls.declaredMethods) {
+            if (m.name !in candidateNames) continue
+            if (m.isAnnotationPresent(java.lang.Deprecated::class.java)) return true
+            if (findAnnotation(m, "kotlin.Deprecated") != null) return true
+        }
+        // Last resort: use kotlin-reflect via KClass.members so we catch @Deprecated declared
+        // on the Kotlin property itself even when the JVM field has no carrier annotation.
+        return try {
+            cls.kotlin.members.any { member ->
+                member.name == f.name &&
+                    member.annotations.any { it.annotationClass.java.name == "kotlin.Deprecated" }
+            }
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     /**

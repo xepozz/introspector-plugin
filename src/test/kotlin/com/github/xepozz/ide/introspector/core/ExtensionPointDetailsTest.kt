@@ -2,7 +2,7 @@ package com.github.xepozz.ide.introspector.core
 
 import com.intellij.util.xmlb.annotations.Attribute
 import com.intellij.util.xmlb.annotations.Property
-import com.intellij.util.xmlb.annotations.RequiredElement
+import com.intellij.openapi.extensions.RequiredElement
 import com.intellij.util.xmlb.annotations.Tag
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse

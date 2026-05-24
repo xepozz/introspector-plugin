@@ -92,7 +92,7 @@ object ClassCatalog {
             if (vf.isDirectory) return@ContentIterator true
             if (!isLikelyClassSourceFile(vf)) return@ContentIterator true
             if (!includeTests && fileIndex.isInTestSourceContent(vf)) return@ContentIterator true
-            if (!includeGenerated && fileIndex.isInGeneratedSourceContent(vf)) return@ContentIterator true
+            if (!includeGenerated && fileIndex.isInGeneratedSources(vf)) return@ContentIterator true
 
             runCatching {
                 val psiFile = psiManager.findFile(vf) as? PsiClassOwner ?: return@runCatching

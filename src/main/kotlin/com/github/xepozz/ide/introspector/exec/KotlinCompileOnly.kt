@@ -5,43 +5,31 @@ import com.github.xepozz.ide.introspector.model.CompileDiagnostic
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlin.script.experimental.api.ResultWithDiagnostics
-import kotlin.script.experimental.api.ScriptCompilationConfiguration
-import kotlin.script.experimental.api.ScriptDiagnostic
-import kotlin.script.experimental.host.StringScriptSource
-import kotlin.script.experimental.jvm.JvmScriptCompilationConfigurationBuilder
-import kotlin.script.experimental.jvm.dependenciesFromClassContext
-import kotlin.script.experimental.jvm.jvm
-import kotlin.script.experimental.jvmhost.JvmScriptCompiler
+import javax.script.Compilable
+import javax.script.ScriptEngineManager
+import javax.script.ScriptException
 
 /**
- * Compiles a Kotlin snippet via `kotlin-scripting-jsr223`'s underlying
- * `JvmScriptCompiler` and returns every diagnostic, *without executing the result*.
+ * Compiles a Kotlin snippet via the JSR-223 [javax.script.Compilable] surface of the Kotlin
+ * scripting engine (the same one [KotlinExecutor] uses), without executing the result.
  *
  * Sibling of [KotlinExecutor]; deliberately not part of it so the run-loop in
- * `exec.execute_kotlin_in_ide` stays focused on execution and we don't accidentally
- * couple compile-only behaviour to the confirmation / AST / audit flow.
+ * `exec.execute_kotlin_in_ide` stays focused on execution and we don't accidentally couple
+ * compile-only behaviour to the confirmation / AST / audit flow.
  *
  * Hard 10s timeout — the same cap [KotlinExecutor] enforces (see CLAUDE.md "Timeouts").
  * Cold-start latency is ~2–3s (loading `kotlin-compiler-embeddable`), warm ~150–400ms.
- * The compiler instance is cached statically so warm calls amortise the cold cost.
+ *
+ * NOTE: This implementation lost access to the rich `ResultWithDiagnostics` API after the
+ * `JvmScriptCompiler` type was removed in Kotlin 2.x. We collapse all errors into a single
+ * "ERROR" diagnostic carrying the [ScriptException] message — sufficient for `ok: false` /
+ * `ok: true` semantics and root-cause exposure, but less granular than per-warning entries.
  */
 object KotlinCompileOnly {
 
     private const val TIMEOUT_MS = 10_000L
+    private const val SCRIPT_ENGINE_NAME = "kotlin"
 
-    /** Cached compiler. First touch loads `kotlin-compiler-embeddable` (~2–3s). */
-    @Volatile private var cachedCompiler: JvmScriptCompiler? = null
-
-    private fun compiler(): JvmScriptCompiler =
-        cachedCompiler ?: synchronized(this) {
-            cachedCompiler ?: JvmScriptCompiler().also { cachedCompiler = it }
-        }
-
-    /**
-     * Compile-check a Kotlin snippet. Pure-function-like: no project state, no EDT,
-     * no IntelliJ services.
-     */
     suspend fun check(
         code: String,
         wrap: Boolean,
@@ -49,19 +37,20 @@ object KotlinCompileOnly {
     ): CompileCheckResponse = check(code, wrap, timeoutMs, ::doCompile)
 
     /**
-     * Test seam: lets unit tests inject a fake "compile" lambda to simulate
-     * exceptions / timeouts without spinning up the real Kotlin compiler.
+     * Test seam: lets unit tests inject a fake "compile" lambda. Public (not internal) so
+     * [com.github.xepozz.ide.introspector.exec.KotlinCompileOnlyTest] in the `testScripting`
+     * source set — which compiles as a separate Kotlin module — can reach it.
      */
-    internal suspend fun check(
+    suspend fun check(
         code: String,
         wrap: Boolean,
         timeoutMs: Long,
-        compileFn: suspend (String) -> ResultWithDiagnostics<*>,
+        compileFn: suspend (String) -> CompileOutcome,
     ): CompileCheckResponse {
         val startNs = System.nanoTime()
         val source = if (wrap) CodeWrapper.wrap(code) else code
 
-        val result: ResultWithDiagnostics<*>? = try {
+        val outcome: CompileOutcome? = try {
             withTimeoutOrNull(timeoutMs) {
                 withContext(Dispatchers.IO) { compileFn(source) }
             }
@@ -79,7 +68,7 @@ object KotlinCompileOnly {
             )
         }
 
-        if (result == null) {
+        if (outcome == null) {
             return CompileCheckResponse(
                 ok = false,
                 diagnostics = emptyList(),
@@ -88,50 +77,71 @@ object KotlinCompileOnly {
             )
         }
 
-        val diagnostics = result.reports.map { it.toModel() }
-        val hasError = diagnostics.any { it.severity == "ERROR" || it.severity == "FATAL" }
-        // result.isFailure may flip even with zero ERROR/FATAL — be defensive.
-        val ok = !hasError && result is ResultWithDiagnostics.Success<*>
         return CompileCheckResponse(
-            ok = ok,
-            diagnostics = diagnostics,
+            ok = outcome.ok,
+            diagnostics = outcome.diagnostics,
             warnings = emptyList(),
             durationMs = elapsedMs(startNs),
         )
     }
 
-    private suspend fun doCompile(source: String): ResultWithDiagnostics<*> {
-        val src = StringScriptSource(source, SCRIPT_NAME)
-        val config = ScriptCompilationConfiguration { configureJvmDependencies() }
-        // JvmScriptCompiler.invoke is `operator suspend (SourceCode, ScriptCompilationConfiguration)`.
-        return compiler().invoke(src, config)
-    }
+    /**
+     * Pair-style return so the test seam can fake a multi-diagnostic outcome without
+     * dragging the JSR-223 types into the test signature. Public for the same reason the
+     * 4-arg `check(…)` overload is — `testScripting` is a separate Kotlin module.
+     */
+    data class CompileOutcome(val ok: Boolean, val diagnostics: List<CompileDiagnostic>)
 
-    private fun ScriptCompilationConfiguration.Builder.configureJvmDependencies() {
-        jvm {
-            // Give the snippet the same classpath the executor sees, so IntelliJ
-            // Platform references resolve identically to runtime.
-            dependenciesFromClassContext(
-                KotlinCompileOnly::class,
-                wholeClasspath = true,
+    private fun doCompile(source: String): CompileOutcome {
+        val mgr = ScriptEngineManager(KotlinCompileOnly::class.java.classLoader)
+        val engine = mgr.getEngineByName(SCRIPT_ENGINE_NAME)
+            ?: return CompileOutcome(
+                ok = false,
+                diagnostics = listOf(
+                    CompileDiagnostic(
+                        severity = "FATAL",
+                        message = "Kotlin ScriptEngine ('$SCRIPT_ENGINE_NAME') unavailable — verify kotlin-scripting-jsr223 is on the runtime classpath.",
+                    )
+                ),
+            )
+        val compilable = engine as? Compilable
+            ?: return CompileOutcome(
+                ok = false,
+                diagnostics = listOf(
+                    CompileDiagnostic(
+                        severity = "FATAL",
+                        message = "Kotlin ScriptEngine does not implement javax.script.Compilable — cannot perform a compile-only check.",
+                    )
+                ),
+            )
+        return try {
+            compilable.compile(source)
+            CompileOutcome(ok = true, diagnostics = emptyList())
+        } catch (e: ScriptException) {
+            CompileOutcome(
+                ok = false,
+                diagnostics = listOf(
+                    CompileDiagnostic(
+                        severity = "ERROR",
+                        line = e.lineNumber.takeIf { it > 0 },
+                        column = e.columnNumber.takeIf { it > 0 },
+                        file = e.fileName,
+                        message = e.message ?: e.javaClass.simpleName,
+                    )
+                ),
+            )
+        } catch (t: Throwable) {
+            CompileOutcome(
+                ok = false,
+                diagnostics = listOf(
+                    CompileDiagnostic(
+                        severity = "FATAL",
+                        message = "Compiler threw ${t.javaClass.simpleName}: ${t.message ?: "(no message)"}",
+                    )
+                ),
             )
         }
     }
 
-    private fun ScriptDiagnostic.toModel(): CompileDiagnostic {
-        val pos = location?.start
-        return CompileDiagnostic(
-            severity = severity.name,
-            line = pos?.line,
-            column = pos?.col,
-            file = sourcePath,
-            message = message,
-            // ScriptDiagnostic.code is an Int; expose it as a stringified factory id.
-            factoryId = code.takeIf { it != 0 }?.toString(),
-        )
-    }
-
     private fun elapsedMs(startNs: Long) = (System.nanoTime() - startNs) / 1_000_000
-
-    private const val SCRIPT_NAME = "exec_compile_check.kts"
 }

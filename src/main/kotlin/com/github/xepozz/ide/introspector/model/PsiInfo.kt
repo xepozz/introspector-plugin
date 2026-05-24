@@ -302,6 +302,10 @@ data class GetOutlineResponse(
     val language: String,
     val nodes: List<OutlineNode> = emptyList(),
     val nodeCount: Int = 0,
+    val truncated: Boolean = false,
+    val warnings: List<String> = emptyList(),
+)
+
 // =====================================================================================
 // psi.type_hierarchy
 // =====================================================================================

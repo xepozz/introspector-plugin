@@ -59,19 +59,28 @@ class ListenerInspector {
         pluginName: String?,
         out: MutableList<ListenerInfo>,
     ) {
-        collectScope(descriptor, scope = "application", containerField = "app", pluginId, pluginName, out)
-        collectScope(descriptor, scope = "project", containerField = "project", pluginId, pluginName, out)
+        // The field names on IdeaPluginDescriptorImpl are `appContainerDescriptor` /
+        // `projectContainerDescriptor` in 252. Earlier 251.x builds used `app` / `project` —
+        // try the canonical names first, fall through to the legacy aliases for safety.
+        collectScope(descriptor, scope = "application",
+            containerFields = listOf("appContainerDescriptor", "app"),
+            pluginId, pluginName, out)
+        collectScope(descriptor, scope = "project",
+            containerFields = listOf("projectContainerDescriptor", "project"),
+            pluginId, pluginName, out)
     }
 
     private fun collectScope(
         descriptor: Any,
         scope: String,
-        containerField: String,
+        containerFields: List<String>,
         pluginId: String,
         pluginName: String?,
         out: MutableList<ListenerInfo>,
     ) {
-        val container = ExtensionPointInspector.readField(descriptor, containerField) ?: return
+        val container = containerFields.asSequence()
+            .mapNotNull { ExtensionPointInspector.readField(descriptor, it) }
+            .firstOrNull() ?: return
         val listeners = ExtensionPointInspector.readField(container, "listeners") as? List<*> ?: return
         for (ld in listeners) {
             if (ld == null) continue

@@ -267,7 +267,9 @@ object RequirementsAnalyzer {
         val facade = findJavaPsiFacade(project)
         val psiClass: PsiClass = facade.findClassByFqn(classFqn)
             ?: throw TargetNotFound("No class found for $classFqn — checked allScope")
-        val methods = psiClass.findMethodsByName(methodName)
+        // The one-arg overload returns Array<JvmMethod>; the two-arg overload returns PsiMethod[]
+        // which is what we want here. `checkBases = false` mirrors the plan (only declared methods).
+        val methods = psiClass.findMethodsByName(methodName, false)
         if (methods.isEmpty()) {
             throw TargetNotFound("No method '$methodName' on $classFqn")
         }

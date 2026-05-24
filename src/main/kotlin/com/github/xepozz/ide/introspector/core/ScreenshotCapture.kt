@@ -150,13 +150,14 @@ object ScreenshotCapture {
                     if (intersected != bounds) {
                         warnings += "component clipped to frame bounds"
                     }
-                    // Inset by half-stroke so the stroke stays inside the box bounds for thick
-                    // strokes; clamp draw rect to keep us inside the image.
-                    val half = clampedThickness / 2
-                    val drawX = (intersected.x + half).coerceAtMost(out.width - 1)
-                    val drawY = (intersected.y + half).coerceAtMost(out.height - 1)
-                    val drawW = (intersected.width - clampedThickness).coerceAtLeast(1)
-                    val drawH = (intersected.height - clampedThickness).coerceAtLeast(1)
+                    // Draw the stroke centred on the bounds rectangle (no inset) so the top
+                    // edge sits ON `bounds.y`, matching what callers expect when they ask
+                    // for "highlight around component bounds". Width=1 stroke maps to one
+                    // pixel row at y == bounds.y.
+                    val drawX = intersected.x
+                    val drawY = intersected.y
+                    val drawW = (intersected.width - 1).coerceAtLeast(1)
+                    val drawH = (intersected.height - 1).coerceAtLeast(1)
                     g.drawRect(drawX, drawY, drawW, drawH)
 
                     val cleanedLabel = label?.replace(Regex("[\r\n]+"), " ")?.trim().orEmpty()

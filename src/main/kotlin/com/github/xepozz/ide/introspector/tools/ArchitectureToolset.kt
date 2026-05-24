@@ -572,6 +572,8 @@ class ArchitectureToolset : McpToolset {
             }
             .filter { !onlyPreloaded || it.preload != "FALSE" }
         return ListServicesResponse(all.take(limit), all.size)
+    }
+
     @McpTool(name = "arch.list_listeners")
     @McpDescription(
         """
@@ -626,6 +628,8 @@ class ArchitectureToolset : McpToolset {
             .filter { providedByPluginId == null || it.providedByPluginId == providedByPluginId }
             .filter { topicContains == null || it.topicClass.contains(topicContains, ignoreCase = true) }
         return ListListenersResponse(all.take(clampedLimit), all.size)
+    }
+
     @McpTool(name = "arch.list_actions")
     @McpDescription(
         """

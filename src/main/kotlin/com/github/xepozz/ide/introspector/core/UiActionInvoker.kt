@@ -92,9 +92,14 @@ object UiActionInvoker {
             )
         }
 
-        // Run update() through ActionUtil so DumbAware is enforced consistently.
+        // Drive `update()` explicitly and read the resulting presentation. `ActionUtil
+        // .lastUpdateAndCheckDumb` is deprecated in 252 and its dumb-aware guard now skips
+        // the update() call entirely for non-dumb-aware actions in DumbMode — meaning
+        // `event.presentation.isEnabled` can stay stale (whatever the action's template
+        // presentation initialised with) and we'd execute a disabled action.
         val enabled = try {
-            ActionUtil.lastUpdateAndCheckDumb(action, event, true)
+            action.update(event)
+            event.presentation.isEnabled
         } catch (t: Throwable) {
             return Result(
                 ok = false,

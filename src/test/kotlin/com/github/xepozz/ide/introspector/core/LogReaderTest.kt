@@ -285,8 +285,10 @@ class LogReaderTest {
 
     @Test
     fun `limit caps returned errors and total reflects pre-truncation count`() {
+        // Use %02d so seconds remain zero-padded (00..09) for it=1..9 and stay 2-digit (10)
+        // for it=10 — otherwise the 10th line emits `14:00:010,000` which fails LOG_LINE.
         val lines = (1..10).joinToString("\n") {
-            "2026-05-24 14:00:0$it,000 [   1] ERROR - cat - java.lang.RuntimeException: msg$it"
+            "2026-05-24 14:00:%02d,000 [   1] ERROR - cat - java.lang.RuntimeException: msg$it".format(it)
         } + "\n"
         val reader = newReader(lines)
         val resp = reader.errorsSince(lastMinutes = 24 * 60, minSeverity = "WARN", limit = 3)

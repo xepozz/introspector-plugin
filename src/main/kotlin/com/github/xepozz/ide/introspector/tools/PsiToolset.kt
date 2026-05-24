@@ -504,6 +504,10 @@ class PsiToolset : McpToolset {
                 // but tests should also work when the file was loaded via PSI without a backing
                 // VirtualFile (rare). Ensure we always return a fileUrl from the resolved request.
                 if (resp.fileUrl.isEmpty()) resp.copy(fileUrl = vf.url) else resp
+            }
+        }
+    }
+
     @McpTool(name = "psi.type_hierarchy")
     @McpDescription(
         """
@@ -673,6 +677,9 @@ class PsiToolset : McpToolset {
                 maxNodes = maxNodes,
             )
             if (resp.fileUrl.isEmpty()) resp.copy(fileUrl = vf.url) else resp
+        }
+    }
+
     @McpTool(name = "psi.goto_implementation")
     @McpDescription(
         """
