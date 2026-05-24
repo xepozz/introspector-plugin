@@ -119,28 +119,8 @@ suspend fun code_list_classes_in_package(
 ## Args + response model
 
 New file `model/args/CodeArgs.kt` (per-group split matches `PsiArgs`, `UiArgs`,
-`ExecArgs`, `ScreenshotArgs`):
-
-```kotlin
-@Serializable
-data class ListClassesInModuleArgs(
-    val moduleName: String,
-    val packagePrefix: String? = null,
-    val includeTests: Boolean = false,
-    val includeGenerated: Boolean = true,
-    val kinds: List<String> = listOf("class","interface","enum","record","annotation","kotlinFileFacade"),
-    val limit: Int = 1000,
-)
-
-@Serializable
-data class ListClassesInPackageArgs(
-    val packageFqn: String,
-    val recursive: Boolean = false,
-    val includeLibraries: Boolean = false,
-    val kinds: List<String> = listOf("class","interface","enum","record","annotation","kotlinFileFacade"),
-    val limit: Int = 500,
-)
-```
+`ExecArgs`, `ScreenshotArgs`) holds `ListClassesInModuleArgs` and
+`ListClassesInPackageArgs`, fields mirroring the `@McpTool` parameters above.
 
 Append to `model/ClassSourceInfo.kt`:
 
@@ -163,14 +143,14 @@ data class ClassEntry(
 
 @Serializable
 data class ListClassesResponse(
-    /** Echoes the module name (module variant) or packageFqn (package variant). */
+    /** Echoes moduleName (module variant) or packageFqn (package variant). */
     val scope: String,
     val classes: List<ClassEntry>,
     val total: Int,
     val truncated: Boolean,
     /** True when the 10s cap fired before enumeration finished. */
     val timedOut: Boolean = false,
-    /** Set when project is in dumb mode and results may be incomplete. */
+    /** Set when DumbService.isDumb and results may be incomplete. */
     val note: String? = null,
 )
 ```
@@ -261,25 +241,21 @@ these tools need.
 
 ## Test plan
 
-**Unit (`ClassCatalogFilterTest.kt`)** — pure JVM:
-- kind filter accepts allowed names, silently rejects unknowns.
-- `packagePrefix=null` matches everything; `"com.acme"` matches `com.acme.*` but not `com.acmex`.
-- `limit` invalid → `IllegalArgumentException`; oversize result → `truncated=true`.
-- `kotlinFileFacade` excluded when not in `kinds`.
+**Unit (`ClassCatalogFilterTest.kt`)** — pure JVM: kind filter accepts allowed
+names and silently rejects unknowns; `packagePrefix` null/exact/non-matching behaviour
+(`com.acme` matches `com.acme.*` but not `com.acmex`); `limit` invalid →
+`IllegalArgumentException`, oversize result → `truncated=true`; `kotlinFileFacade`
+excluded when absent from `kinds`.
 
-**Platform (`ClassCatalogPlatformTest.kt`)** — `BasePlatformTestCase` with multi-module fixture:
-- `testListInModuleTopLevelOnly` — no inner / anonymous.
-- `testListInModuleIncludeTests` — toggle returns test-root classes.
-- `testListInModuleExcludesGenerated` — `includeGenerated=false` hides them.
-- `testListInModulePackagePrefix` — only `com.acme.billing.*` returned.
-- `testListInModuleAnnotationKind` — `kinds=["annotation"]` filter.
-- `testListInPackageNonRecursive` vs `testListInPackageRecursive`.
-- `testListInPackageExcludesLibrariesByDefault` — `java.util` returns empty without `includeLibraries`.
-- `testListInPackageDefaultPackage` — `packageFqn=""` works.
-- `testKotlinFileFacadeKind` — top-level Kotlin `fun foo()` produces `kind="kotlinFileFacade"`.
-- `testModuleNotFoundThrowsMcpExpectedError`.
-- `testLimitTruncates` — synthetic fixture > limit → `truncated=true`.
-- `testTimedOutFlag` — inject a tiny deadline via test seam; verify `timedOut=true`
+**Platform (`ClassCatalogPlatformTest.kt`)** — `BasePlatformTestCase`, multi-module
+fixture (two modules, Java + Kotlin sources + a generated dir):
+- module variant: top-level-only (no inner/anonymous); `includeTests` toggle;
+  `includeGenerated=false` hides generated sources; `packagePrefix` honoured;
+  `kinds=["annotation"]` filter; `moduleName="nope"` → `McpExpectedError`.
+- package variant: non-recursive vs recursive; `includeLibraries=false` excludes
+  JDK from `java.util`; `packageFqn=""` works.
+- shared: Kotlin top-level `fun foo()` → `kind="kotlinFileFacade"`;
+  `limit` triggers `truncated=true`; injected tiny deadline → `timedOut=true`
   with partial results.
 
 Toolset wrappers are thin enough not to need their own test class.
@@ -319,15 +295,16 @@ Toolset wrappers are thin enough not to need their own test class.
 ## References
 
 - Existing code: `tools/CodeSourceToolset.kt#code_find_class` (read-action +
-  `requireProject` + `McpExpectedError` shape), `core/ClassSourceResolver.kt`
-  (sibling `object` headless helper — new `ClassCatalog.kt` mirrors layout),
+  `requireProject` + `McpExpectedError`), `core/ClassSourceResolver.kt` (sibling
+  `object` headless helper; new `ClassCatalog.kt` mirrors layout),
   `core/PluginInventory.kt` (defensive per-entry `runCatching` pattern).
-- IntelliJ source:
-  - `JavaPsiFacade`: https://github.com/JetBrains/intellij-community/blob/master/java/java-psi-api/src/com/intellij/psi/JavaPsiFacade.java
-  - `PsiPackage`: https://github.com/JetBrains/intellij-community/blob/master/java/java-psi-api/src/com/intellij/psi/PsiPackage.java
-  - `GlobalSearchScope`: https://github.com/JetBrains/intellij-community/blob/master/platform/core-api/src/com/intellij/psi/search/GlobalSearchScope.java
-  - `ProjectFileIndex`: https://github.com/JetBrains/intellij-community/blob/master/platform/projectModel-api/src/com/intellij/openapi/roots/ProjectFileIndex.kt
-  - `KtLightClassForFacade` (Kotlin plugin, optional): https://github.com/JetBrains/intellij-community/blob/master/plugins/kotlin/base/light-classes/src/org/jetbrains/kotlin/asJava/classes/KtLightClassForFacade.kt
+- IntelliJ source: `JavaPsiFacade` and `PsiPackage` under
+  `java/java-psi-api/src/com/intellij/psi/`, `GlobalSearchScope` under
+  `platform/core-api/src/com/intellij/psi/search/`, `ProjectFileIndex` under
+  `platform/projectModel-api/src/com/intellij/openapi/roots/`, optional
+  `KtLightClassForFacade` under
+  `plugins/kotlin/base/light-classes/src/org/jetbrains/kotlin/asJava/classes/`
+  (all on `JetBrains/intellij-community`).
 - JetBrains MCP equivalent: `search_symbol` (fuzzy class/method/field lookup —
-  different shape: ranks fuzzy matches, doesn't enumerate a scope). These tools
-  are the strict-by-scope complement.
+  ranks fuzzy matches, doesn't enumerate a scope). These tools are the strict-
+  by-scope complement.

@@ -156,47 +156,37 @@ suspend fun psi_goto_implementation(
 )
 ```
 
-`model/PsiInfo.kt` (append):
+`model/PsiInfo.kt` (append; all `@Serializable`):
 
 ```kotlin
-@Serializable data class HierarchyClassRef(
-    val fqn: String?, val psiClass: String,
+data class HierarchyClassRef(val fqn: String?, val psiClass: String,
     val fileUrl: String? = null, val declarationRange: TextRangeInfo? = null,
     val isInterface: Boolean = false, val isAbstract: Boolean = false,
     val isFinal: Boolean = false, val isSealed: Boolean = false,
-    val modifiers: List<String> = emptyList(),
-)
-@Serializable data class HierarchyNode(
-    val node: HierarchyClassRef,
+    val modifiers: List<String> = emptyList())
+data class HierarchyNode(val node: HierarchyClassRef,
     val children: List<HierarchyNode> = emptyList(),
-    val childrenTruncated: Boolean = false,
-)
-@Serializable data class TypeHierarchyResponse(
-    val target: HierarchyClassRef,
+    val childrenTruncated: Boolean = false)
+data class TypeHierarchyResponse(val target: HierarchyClassRef,
     val supertypes: HierarchyNode? = null, val subtypes: HierarchyNode? = null,
-    val direction: String, val scope: String,
-    val truncated: Boolean = false, val warnings: List<String> = emptyList(),
-)
-@Serializable data class ImplementationTarget(
-    val name: String?, val psiClass: String, val kind: String,  // "class" | "method"
-    val fileUrl: String? = null, val declarationRange: TextRangeInfo? = null,
-    val isAbstract: Boolean = false, val isInterface: Boolean = false,
-)
-@Serializable data class ImplementationInfo(
-    val fileUrl: String, val range: TextRangeInfo, val lineSnippet: String,
-    val declaringClassFqn: String? = null, val signature: String? = null,
-    val isAbstract: Boolean = false, val isOverride: Boolean = false,
-)
-@Serializable data class GotoImplementationResponse(
-    val target: ImplementationTarget, val implementations: List<ImplementationInfo>,
-    val scope: String, val total: Int,
-    val truncated: Boolean = false, val warnings: List<String> = emptyList(),
-)
+    val direction: String, val scope: String, val truncated: Boolean = false,
+    val warnings: List<String> = emptyList())
+data class ImplementationTarget(val name: String?, val psiClass: String,
+    val kind: String /* "class" | "method" */, val fileUrl: String? = null,
+    val declarationRange: TextRangeInfo? = null,
+    val isAbstract: Boolean = false, val isInterface: Boolean = false)
+data class ImplementationInfo(val fileUrl: String, val range: TextRangeInfo,
+    val lineSnippet: String, val declaringClassFqn: String? = null,
+    val signature: String? = null /* null when kind="class" */,
+    val isAbstract: Boolean = false, val isOverride: Boolean = false)
+data class GotoImplementationResponse(val target: ImplementationTarget,
+    val implementations: List<ImplementationInfo>, val scope: String,
+    val total: Int, val truncated: Boolean = false,
+    val warnings: List<String> = emptyList())
 ```
 
 Validation: `direction` ∈ {up,down,both}; `scope` ∈ {file,project,all};
-`maxDepth` 1..20; `maxNodes` 1..5_000; `maxResults` 1..5_000. Invalid →
-`McpExpectedError`.
+`maxDepth` 1..20; `maxNodes`/`maxResults` 1..5_000. Invalid → `McpExpectedError`.
 
 ## IntelliJ APIs used (Java + Kotlin paths)
 
@@ -269,20 +259,20 @@ paging — not a higher timeout.
 
 ## Files to create/modify
 
-| Path | Op | What |
-|------|----|------|
-| `core/PsiHierarchyResolver.kt` | Create | Headless logic for both tools: FQN/position → PsiClass/PsiMethod, super/sub walk, override search, result shaping. |
-| `model/PsiInfo.kt` | Edit | Append the six new `@Serializable` types above. |
-| `model/args/PsiArgs.kt` | Edit | Append `TypeHierarchyArgs`, `GotoImplementationArgs`. |
-| `tools/PsiToolset.kt` | Edit | Add `psi_type_hierarchy` and `psi_goto_implementation` (thin wrappers). |
-| `src/test/kotlin/.../core/PsiHierarchyResolverTest.kt` | Create | Unit: arg validation + truncation flags + Object special-case. |
-| `src/test/kotlin/.../core/platform/PsiHierarchyResolverPlatformTest.kt` | Create | Platform tests with Java + Kotlin fixtures. |
+- `core/PsiHierarchyResolver.kt` (Create) — headless logic for both tools:
+  FQN/position → PsiClass/PsiMethod, super/sub walk, override search, result shaping.
+- `model/PsiInfo.kt` (Edit) — append the six new `@Serializable` types.
+- `model/args/PsiArgs.kt` (Edit) — append `TypeHierarchyArgs`, `GotoImplementationArgs`.
+- `tools/PsiToolset.kt` (Edit) — add `psi_type_hierarchy` + `psi_goto_implementation`
+  (thin wrappers).
+- `src/test/kotlin/.../core/PsiHierarchyResolverTest.kt` (Create) — unit tests.
+- `src/test/kotlin/.../core/platform/PsiHierarchyResolverPlatformTest.kt` (Create) —
+  platform tests with Java + Kotlin fixtures.
 
 No new XML wiring: both methods live on `PsiToolset` (already in
-`mcp-integration.xml`). `JavaPsiFacade` requires `com.intellij.modules.java`;
-in IDEs without it, surface a clean `McpExpectedError` rather than CNFE. If CI
-shows real breakage, split to a new `PsiHierarchyToolset` under
-`java-introspect.xml`.
+`mcp-integration.xml`). `JavaPsiFacade` requires `com.intellij.modules.java`; in
+IDEs without it, surface a clean `McpExpectedError` rather than CNFE — split to
+`java-introspect.xml` if CI shows breakage.
 
 ## Test plan
 
@@ -315,20 +305,20 @@ Java + Kotlin fixtures + platform tests 3h, doc-gen + `runIde` smoke 1h. Total
 ## Open questions / risks
 
 1. **goto_implementation on a class — follow `extends` AND `implements`?**
-   `DefinitionsScopedSearch` natively does both. **Default: yes**, both
-   returned; `declaringClassFqn` lets callers filter.
+   `DefinitionsScopedSearch` natively does both. **Default: yes**;
+   `declaringClassFqn` lets callers filter.
 2. **Walk Kotlin sealed children automatically?** Sealed children fall out of
-   `ClassInheritorsSearch` naturally. **Proposed**: no special walk; just flag
-   `isSealed=true` + warning so the agent knows the list is exhaustive.
+   `ClassInheritorsSearch` naturally — no special walk; just flag `isSealed=true`
+   + warning so the agent knows the list is exhaustive.
 3. **Deduplicate impls overridden further down?** `OverridingMethodsSearch(checkDeep=true)`
-   returns BOTH abstract mid-tier and concrete leaves. The "what concretely
-   implements X?" question wants concrete only. **Proposed: filter
-   `!isAbstract` for methods by default**; add `includeAbstract` flag only if
-   a real caller needs both. Not in v1 signature.
-4. **`OverridingMethodsSearch` order** — platform makes no stability promise;
-   sort by `(fileUrl, range.startOffset)` so tests can assert order.
-5. **Java module dep** — `JavaPsiFacade` ClassNotFound on IDEs without
-   `com.intellij.modules.java` → degrade with clean error; split if CI insists.
+   returns BOTH abstract mid-tier and concrete leaves. **Proposed: filter
+   `!isAbstract` for methods by default**; add `includeAbstract` flag only if a
+   caller demonstrates need (not in v1).
+4. **`OverridingMethodsSearch` order** — no platform stability promise; we sort
+   by `(fileUrl, range.startOffset)`.
+5. **Java module dep** — `JavaPsiFacade` CNFE on IDEs without
+   `com.intellij.modules.java` → degrade with clean error; split to
+   `java-introspect.xml` if CI insists.
 
 ## References
 

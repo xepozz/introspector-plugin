@@ -221,84 +221,75 @@ worst case. No caching — per-call data.
 
 | Path | Op | What |
 |------|----|------|
-| `tools/ScreenshotToolset.kt` | Edit | Add `screenshot_highlight` + `screenshot_diff` `@McpTool` methods; reuse `finalise()` |
-| `core/ScreenshotCapture.kt` | Edit | Add `drawHighlight(base, bounds, color, thickness, label)` — pure, off-EDT, testable |
-| `core/ImageDiffer.kt` | Create | Headless `diff(before, after, tolerance, color, baseAlpha, policy): DiffResult` — pure JVM |
-| `model/ImageDiffPayload.kt` | Create | `@Serializable` `BBox` + `ImageDiffPayload` (parallels `ImagePayload`, no inheritance) |
-| `model/args/ScreenshotArgs.kt` | Create | `@Serializable` arg mirrors (consistency with other plans; used by tests) |
-| `util/ColorParsing.kt` | Create | `parseCssColor(raw): Color?` — hex (`#RGB`/`#RRGGBB`/`#RRGGBBAA`) + named-color table |
-| `src/test/kotlin/.../core/ImageDifferTest.kt` | Create | Unit tests for diff math, bbox, tolerance, size-mismatch policies |
-| `src/test/kotlin/.../core/ScreenshotHighlightTest.kt` | Create | Unit tests for `drawHighlight` (synthetic image, pixel assertions) |
-| `src/test/kotlin/.../util/ColorParsingTest.kt` | Create | Table-driven parser tests |
-| `src/test/kotlin/.../core/platform/ScreenshotHighlightPlatformTest.kt` | Create | `BasePlatformTestCase` smoke — register `JButton`, call toolset, decode PNG, assert stroke pixel |
+| `tools/ScreenshotToolset.kt` | Edit | Add `screenshot_highlight` + `screenshot_diff` methods; reuse `finalise()` |
+| `core/ScreenshotCapture.kt` | Edit | Add `drawHighlight(base, bounds, color, thickness, label)` — pure, off-EDT |
+| `core/ImageDiffer.kt` | New | Headless `diff(before, after, tolerance, color, baseAlpha, policy): DiffResult` |
+| `model/ImageDiffPayload.kt` | New | `@Serializable` `BBox` + `ImageDiffPayload` |
+| `model/args/ScreenshotArgs.kt` | New | `@Serializable` arg mirrors for tests |
+| `util/ColorParsing.kt` | New | `parseCssColor(raw): Color?` — hex + named-color table |
+| `test/.../core/ImageDifferTest.kt` | New | Diff math / bbox / tolerance / size-mismatch |
+| `test/.../core/ScreenshotHighlightTest.kt` | New | `drawHighlight` synthetic-image pixel assertions |
+| `test/.../util/ColorParsingTest.kt` | New | Table-driven parser tests |
+| `test/.../core/platform/ScreenshotHighlightPlatformTest.kt` | New | Smoke: `BasePlatformTestCase` + JButton + toolset call |
 
 No XML wiring — both tools live in the existing `ScreenshotToolset` already
 registered by `META-INF/mcp-integration.xml`.
 
 ## Test plan
 
-**Unit — `ImageDifferTest`**: identical 8×8 → no diff, null bbox; single-pixel
-change → 1×1 bbox at that pixel; 3×3 block at (5,5) → bbox `{5,5,3,3}`;
-`tolerance=10` masks +5 per-channel change, `tolerance=4` reports it; size
-mismatch — `error` throws, `resize` returns resized stats, `pad` counts OOB
-transparent-vs-opaque as diff; alpha-only change counts at `tolerance=0` not
-`128`; highlight tint applied (sample changed-block center, channel > thresh).
+`ImageDifferTest` (unit): identical 8×8 → no diff + null bbox; single pixel
+change → 1×1 bbox; 3×3 block at (5,5) → `{5,5,3,3}`; `tolerance=10` masks +5
+per-channel, `tolerance=4` reports it; size mismatch — `error` throws, `resize`
+returns resized stats, `pad` counts OOB transparent-vs-opaque as diff; alpha
+255→128 counts at `tolerance=0` not `128`; highlight tint applied (channel >
+thresh at changed-block center).
 
-**Unit — `ScreenshotHighlightTest`**: `drawHighlight` on 100×100 white, bounds
-`(10,10,30,30)`, red, thickness 2 — pixel `(10,10)` red, `(11,11)` red,
-`(50,50)` white; zero-size bounds draws marker; bounds clipped to edge does not
-throw and emits warning; label placed above when headroom, inside-top when not.
+`ScreenshotHighlightTest` (unit): `drawHighlight` on 100×100 white, bounds
+`(10,10,30,30)` red thickness 2 — pixel `(10,10)` red, `(50,50)` white;
+zero-size bounds draws marker; bounds clipped to edge doesn't throw + emits
+warning; label placed above when headroom, inside-top when not.
 
-**Unit — `ColorParsingTest`** (table): `#FF0000` / `#f00` / `#FF0000FF` → red;
-`red` / `RED` case-insensitive → red; `lime` → `(0,255,0)`; `"not a color"` /
+`ColorParsingTest` (unit table): `#FF0000` / `#f00` / `#FF0000FF` → red;
+case-insensitive `red`/`RED` → red; `lime` → `(0,255,0)`; `"not a color"` /
 `#GGG` / `""` → null.
 
-**Platform — `ScreenshotHighlightPlatformTest`** (extends `BasePlatformTestCase`):
-register a `JButton` of known size in a parent JFrame; call
-`screenshot_highlight target="component"`; decode PNG; assert stroke-color pixel
-on the box edge. `target="active_frame"` on a real frame — verify size matches
-and a colored stripe exists. `componentId="nonexistent"` → `McpExpectedError`.
-
-`diff` is pure CPU — fully covered by units; no platform test needed.
+`ScreenshotHighlightPlatformTest` (`BasePlatformTestCase`): register a `JButton`
+in a JFrame, call `screenshot_highlight target="component"`, decode PNG, assert
+stroke pixel on box edge; `target="active_frame"` — verify size + colored
+stripe; `componentId="nonexistent"` → `McpExpectedError`. `diff` is pure CPU —
+units cover it; no platform test.
 
 ## Estimated effort
 
-| Step | Hours |
-|------|-------|
-| `util/ColorParsing.kt` + tests | 1.0 |
-| `ScreenshotCapture.drawHighlight` + unit tests | 1.5 |
-| `core/ImageDiffer.kt` + unit tests | 2.5 |
-| `model/ImageDiffPayload.kt` + args | 0.5 |
-| Two `@McpTool` methods + descriptions | 1.5 |
-| Platform test (sandbox tick) | 1.0 |
-| Doc-gen verify + manual smoke | 0.5 |
-| **Total** | **~1 day combined** |
+ColorParsing + tests 1 h; `drawHighlight` + tests 1.5 h; `ImageDiffer` + tests
+2.5 h; `ImageDiffPayload` + args 0.5 h; two `@McpTool` methods + descriptions
+1.5 h; platform test 1 h; doc-gen verify + manual smoke 0.5 h. **Total ≈ 1 day.**
 
 ## Open questions / risks
 
-1. **Multiple componentIds in one highlight call?** Useful for "show me A, B
-   and C" but multiplies the color/label arg surface. **Decision v1: single
-   component**; add `screenshot.highlight_many` later if demanded.
-2. **Crop diff output to bbox before returning?** Shrinks responses for small
-   changes but loses spatial context. **Decision: full-frame composite**; add
+1. **Multiple componentIds per highlight call?** Useful for "show A, B and C"
+   but multiplies arg surface. **v1: single**; add `highlight_many` later if
+   demanded.
+2. **Crop diff to bbox before returning?** Shrinks responses for small changes
+   but loses spatial context. **Default: full-frame composite**; add
    `cropToBbox: Boolean = false` follow-up arg if budget pain appears.
-3. **AA on the highlight rectangle.** `VALUE_ANTIALIAS_ON` looks cleaner at
-   non-1.0 `scale` but fuzzes the stroke edges (complicates pixel-edge
-   assertions). **Decision: AA on**; tests sample box interior, not stroke edge.
-4. **Native screen DPI vs JBR HiDPI.** `target="screen"` (Robot) returns
-   physical pixels; `target="active_frame"` returns logical pixels. Existing
-   `capture` has this; we inherit and document if reported.
-5. **Default `tolerance=8`** is a guess for JBR HiDPI subpixel jitter; validate
-   in platform smoke and bump to `12` if a noop comparison exceeds 0.1% diff.
+3. **AA on the highlight rectangle** — `VALUE_ANTIALIAS_ON` looks cleaner at
+   non-1.0 `scale` but fuzzes stroke edges. **Decision: AA on**; tests sample
+   box interior, not stroke edge.
+4. **Native screen DPI vs JBR HiDPI** — `target="screen"` (Robot) returns
+   physical pixels; `target="active_frame"` returns logical. Existing `capture`
+   has this; inherited and documented if reported.
+5. **Default `tolerance=8`** is a guess; validate in platform smoke and bump to
+   `12` if a noop "before vs immediately-after" exceeds 0.1% diff.
 
 ## References
 
-- Existing: `tools/ScreenshotToolset.kt` (`screenshot_capture` render path +
-  `finalise()`; `screenshot_crop` coord-space / clip math),
-  `core/ScreenshotCapture.kt#fitWithinBudget`, `core/ComponentRegistry.kt#lookup`,
-  `util/ImageEncoding.kt` (`encodePngBase64`, `scaleImage`),
-  `util/EdtHelpers.kt#onEdtBlocking` (with `ModalityState.any()`).
-- IntelliJ source: `WindowManager.findVisibleFrame` —
-  https://github.com/JetBrains/intellij-community/blob/master/platform/platform-api/src/com/intellij/openapi/wm/WindowManager.java
-- JetBrains MCP equivalent: **none**. The shipped JetBrains MCP server in
-  IntelliJ 2025.2+ has zero screenshot tools — entire group is greenfield.
+Existing code: `tools/ScreenshotToolset.kt` (`screenshot_capture` render path +
+`finalise()`; `screenshot_crop` coord-space / clip math),
+`core/ScreenshotCapture.kt#fitWithinBudget`, `core/ComponentRegistry.kt#lookup`,
+`util/ImageEncoding.kt` (`encodePngBase64`, `scaleImage`),
+`util/EdtHelpers.kt#onEdtBlocking` (with `ModalityState.any()`). IntelliJ source:
+`WindowManager.findVisibleFrame` —
+https://github.com/JetBrains/intellij-community/blob/master/platform/platform-api/src/com/intellij/openapi/wm/WindowManager.java.
+JetBrains MCP equivalent: **none** — the shipped server in IntelliJ 2025.2+ has
+zero screenshot tools.

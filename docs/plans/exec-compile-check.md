@@ -131,72 +131,62 @@ Primary path (rich diagnostics):
 - `kotlin.script.experimental.jvmhost.BasicJvmScriptingHost` — entry point.
 - `host.compiler` (a `JvmScriptCompiler`) — `compile(source, configuration)`
   (suspend) returns `ResultWithDiagnostics<CompiledScript>`. Pull `.reports`
-  regardless of outcome (`Success` and `Failure` both carry diagnostics).
+  regardless of `Success`/`Failure` — both carry diagnostics.
 - `kotlin.script.experimental.api.ScriptDiagnostic` — fields used:
   `severity` (FATAL/ERROR/WARNING/INFO/DEBUG enum), `message`, `sourcePath`,
-  `location?.start.line / col`, `code` (factory-id string).
+  `location?.start.line/col`, `code` (factory-id string).
 - `JvmScriptCompilationConfigurationBuilder.jvm { dependenciesFromClassContext(KotlinCompileOnly::class, wholeClasspath = true) }`
   — gives the snippet the SAME classpath the executor sees, so IntelliJ
   Platform references resolve identically.
 - `toScriptSource(name)` to wrap the string source.
 
-Fallback (degraded): `ScriptEngineManager.getEngineByExtension("kts")`,
-cast to the `KotlinJsr223ScriptEngineImpl` interface, call `.compile(script)`.
-Diagnostics there come from a single `ScriptException` with `lineNumber()` /
-`columnNumber()` — usable but loses warnings. Implement primary; fall back
-only if `BasicJvmScriptingHost` isn't reachable on a future IDE build.
+Fallback (degraded): `ScriptEngineManager.getEngineByExtension("kts")` →
+cast to `KotlinJsr223ScriptEngineImpl` → `.compile(script)`. Diagnostics
+collapse to a single `ScriptException` with `lineNumber()`/`columnNumber()`
+— usable but loses warnings. Implement primary; fall back only if
+`BasicJvmScriptingHost` isn't reachable on a future IDE build.
 
-Stability: `BasicJvmScriptingHost`, `JvmScriptCompiler`, `ScriptDiagnostic`
-are stable since Kotlin 1.3 scripting and already on the classpath via
-`kotlin-scripting-jsr223:2.1.20`.
+Stability: all three are stable since Kotlin 1.3 scripting and already on
+the classpath via `kotlin-scripting-jsr223:2.1.20`.
 
-## Threading & EDT model
+## Threading, EDT, timeout
 
 - Compile is **not** EDT — no Swing, no PSI, no IntelliJ project state.
-- Run inside `withContext(Dispatchers.IO) { … }` (or reuse the cached pool
-  `KotlinExecutor.executor`), wrapped in `withTimeoutOrNull(10_000)`.
-- No `onEdtBlocking`. No `ReadAction`. No `Project` required (the wrapper's
-  `project: Project?` parameter is left as a nullable formal — compiler
-  doesn't care it's never assigned).
-
-## Timeout strategy
-
-- Hard cap **10 000 ms** (CLAUDE.md rule).
-- Cold start (first compile in this JVM) loads kotlin-compiler-embeddable —
-  ~2–3 s observed in execute today. Warm compiles ~150–400 ms.
+  Run inside `withContext(Dispatchers.IO) { … }` (or reuse the cached
+  `KotlinExecutor.executor` pool). No `onEdtBlocking`, no `ReadAction`.
+  No `Project` required — `project: Project?` in the wrapper is a nullable
+  formal the compiler doesn't care is unassigned.
+- Hard cap **10 000 ms** (CLAUDE.md). Cold start (first compile in this
+  JVM) loads kotlin-compiler-embeddable, ~2–3 s; warm ~150–400 ms.
 - `withTimeoutOrNull(10_000) { … }` around the suspend `compile(...)`; on
-  timeout return `ok=false`, `diagnostics=[]`, `warnings=["Compile timed out
-  after 10000 ms"]` — do NOT throw.
-- Caching the compiler instance (see open Qs) keeps the 10 s budget
-  comfortable on cold calls and trivial on warm ones.
+  timeout return `ok=false`, `diagnostics=[]`, `warnings=["Compile timed
+  out after 10000 ms"]` — do NOT throw. Caching the compiler (open Qs)
+  keeps the budget comfortable on cold calls and trivial on warm ones.
 
 ## Edge cases
 
 1. **Empty / whitespace-only `code`** → `ok=true`, `diagnostics=[]`. The
-   wrapper still produces a valid `class Plugin { fun run(...) = run { } }`.
-2. **Compiler-internal exception** (uncaught crash inside `compile()`) →
-   catch, return single `CompileDiagnostic(severity="FATAL", message=<msg>)`,
-   `ok=false`. Never propagate.
-3. **`kotlin-scripting-jsr223` missing** → in practice unreachable
-   (`kotlin-exec.xml` gate), but defensively: single FATAL diagnostic
-   `"Kotlin scripting host not available"`, `ok=false`.
-4. **Multi-file snippets** (input contains a second top-level declaration the
-   wrapper would put inside a class body, or `wrap=false` input has two
-   `package` lines) → compiler returns ERROR diagnostics, surfaced normally.
-   `@McpDescription` already documents JSR-223 single-script limitation.
-5. **Snippet references a class not on the plugin classpath** (e.g. a
-   project-only library) → `UNRESOLVED_REFERENCE` ERROR with line/column,
-   `ok=false`. Normal flow.
-6. **Snippet uses implicit helpers (`read`, `write`, `onEdt`, `project`,
-   `pluginDisposable`) with `wrap=true`** → compiles cleanly.
-7. **Same input with `wrap=false`** → `UNRESOLVED_REFERENCE` on the helpers.
-   Document `wrap=true` as the safe default.
-8. **Warnings-only outcome** (deprecated API, no errors) → `ok=true`,
-   `diagnostics` contains WARNINGs. Callers wanting strict mode can
-   inspect themselves.
-9. **`return` at top level** (illegal in `kotlin.run { }`) → ERROR with the
+   wrapper still emits a valid `class Plugin { fun run(...) = run { } }`.
+2. **Compiler-internal exception** → catch, return single
+   `CompileDiagnostic(severity="FATAL", message=<msg>)`, `ok=false`. Never
+   propagate.
+3. **`kotlin-scripting-jsr223` missing** → unreachable in practice
+   (`kotlin-exec.xml` gate); defensively returns a FATAL diagnostic.
+4. **Multi-file snippets** (a second top-level declaration the wrapper would
+   nest inside a class body, or `wrap=false` input with two `package` lines)
+   → ERROR diagnostics, surfaced normally. JSR-223 single-script limitation
+   is already called out in `@McpDescription`.
+5. **Reference to a class not on the plugin classpath** (e.g. project-only
+   library) → `UNRESOLVED_REFERENCE` ERROR with line/column. Normal flow.
+6. **Implicit helpers (`read`, `write`, `onEdt`, `project`,
+   `pluginDisposable`) with `wrap=true`** → compiles cleanly. Same input
+   with `wrap=false` → `UNRESOLVED_REFERENCE` on the helpers — document
+   `wrap=true` as the safe default.
+7. **Warnings-only outcome** (deprecated API, no errors) → `ok=true`,
+   `diagnostics` carries WARNINGs. Callers can apply strict mode themselves.
+8. **`return` at top level** (illegal in `kotlin.run { }`) → ERROR with the
    *wrapped* file's line number, not the user's. Offset adjustment is a
-   v1.1 item (see open Qs).
+   v1.1 item (open Qs).
 
 ## Files to create / modify
 
@@ -213,49 +203,41 @@ No META-INF changes: tool lives in `ExecToolset`, already registered by
 
 ## Test plan & gradle implications
 
-`build.gradle.kts` (lines 90–97) explicitly **excludes** the scripting stack
+`build.gradle.kts` lines 90–97 explicitly **exclude** the scripting stack
 from `testRuntimeClasspath` because kotlin-compiler-embeddable bundles older
-platform resources (`messages/JavaPsiBundle.properties`, upstream
-coroutines) that shadow the IDE's modern copies and crash
-`BasePlatformTestCase` setUp. We need compile-only tests without breaking
-that.
+platform resources (`messages/JavaPsiBundle.properties`, upstream coroutines)
+that shadow the IDE's modern copies and crash `BasePlatformTestCase` setUp.
+We need compile-only tests without breaking that.
 
-Three strategies, recommend (a):
+Strategies (recommend **a**):
 
-(a) **Isolated `testScripting` source set** with its own
-    `testScriptingRuntimeClasspath` that KEEPS the scripting deps but does
-    NOT inherit `BasePlatformTestCase` or the IntelliJ test framework.
-    Tests call `KotlinCompileOnly.check(...)` directly — pure JVM, no
-    IntelliJ runtime, no resource clash. Wire `testScripting` into `check`.
-    ~30 LoC of Gradle plumbing. Robust.
+(a) **Isolated `testScripting` source set** with its own runtime classpath
+    that KEEPS the scripting deps but does NOT inherit `BasePlatformTestCase`
+    or the IntelliJ test framework. Tests call `KotlinCompileOnly.check(...)`
+    directly — pure JVM, no IntelliJ runtime, no resource clash. Wire
+    `testScripting` into `check`. ~30 LoC of Gradle plumbing.
+(b) Re-include scripting on the existing `test` classpath, filter offending
+    resources via jar transforms. Brittle whack-a-mole; reject.
+(c) `runIde`-only integration tests; zero Gradle change but no fast feedback.
+    Reject for v1.
 
-(b) **Re-include scripting on the existing `test` classpath but filter
-    offending resources** via jar transforms. Brittle — resource list
-    changes between Kotlin versions, plays whack-a-mole. Reject.
-
-(c) **`runIde`-only integration tests**, skip unit testing. Zero Gradle
-    change, but no fast feedback and silent regressions. Reject for v1.
-
-Concrete test scenarios under strategy (a):
+Test scenarios (under strategy (a)):
 
 1. Empty code → `ok=true`, `diagnostics.isEmpty()`.
 2. Trivially valid wrapped snippet (`"42"`, `wrap=true`) → `ok=true`.
-3. Syntax error (`"val x ="`) → `ok=false`, at least one ERROR with
-   non-null `line` and `column`.
-4. Unresolved reference (`"foo.bar()"`, `wrap=true`) → `ok=false`,
-   message contains `"Unresolved reference"`, `factoryId` mentions
-   `UNRESOLVED_REFERENCE`.
-5. `read { 42 }` with `wrap=true` → `ok=true` (wrapper exposes `read`).
-6. Same input with `wrap=false` → `ok=false`, unresolved reference on
-   `read`.
-7. Constructor-injected 1 ms timeout → `ok=false`, `warnings` mentions
+3. Syntax error (`"val x ="`) → `ok=false`, at least one ERROR with non-null
+   `line`/`column`.
+4. Unresolved reference (`"foo.bar()"`, `wrap=true`) → `ok=false`, message
+   contains `"Unresolved reference"`, `factoryId` mentions `UNRESOLVED_REFERENCE`.
+5. `read { 42 }` with `wrap=true` → `ok=true` (wrapper exposes `read`); same
+   input with `wrap=false` → `ok=false`, unresolved on `read`.
+6. Constructor-injected 1 ms timeout → `ok=false`, `warnings` mentions
    "timed out", `diagnostics.isEmpty()`.
-8. Simulated compiler crash (forced exception in a test-only seam) →
-   caught, single FATAL diagnostic, never propagates.
+7. Simulated compiler crash (forced exception via a test-only seam) → caught,
+   single FATAL diagnostic, never propagates.
 
-NO `BasePlatformTestCase` test — compile-only logic doesn't need an IntelliJ
-project. The `ExecToolset` wrapper is a one-line delegate; not worth its own
-test class.
+No `BasePlatformTestCase` test — compile-only doesn't need an IntelliJ
+project. The `ExecToolset` wrapper is a one-line delegate.
 
 ## Estimated effort
 

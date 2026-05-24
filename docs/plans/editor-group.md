@@ -191,43 +191,40 @@ signatures; both `@Serializable`.
 
 ## Threading & EDT model
 
-- Both tools touch a Swing `Editor` → run inside `onEdtBlocking { … }`
-  (uses `ModalityState.any()`, 10 s cap from `EdtHelpers`).
-- Inside the EDT block, wrap daemon / document / folding reads in
-  `ReadAction.compute<T, RuntimeException> { … }` (EDT does not imply read-action
-  ownership).
-- `editor.set_caret` writes to the caret model — also EDT-only, same bounce.
-- No PSI parsing required.
+Both tools touch a Swing `Editor` → run inside `onEdtBlocking { … }` (uses
+`ModalityState.any()`, 10 s cap from `EdtHelpers`). Inside the EDT block, wrap daemon
+/ document / folding reads in `ReadAction.compute<T, RuntimeException> { … }` (EDT
+does not imply read-action ownership). `editor.set_caret` writes to the caret model —
+also EDT-only, same bounce. No PSI parsing required.
 
 ## Timeout strategy
 
 Hard 10 s cap. Both tools complete in <100 ms on a normal file: caret math is O(1),
 fold/inlay/caret enumeration is O(N) over typically <100 elements, daemon
 `getHighlights` is an in-memory list lookup. The one risk is `includeInlays=true` on
-a heavily annotated file — we mitigate by returning *only counts* (not the elements
-themselves) and leaving `includeInlays` off by default.
+a heavily annotated file — mitigated by returning *only counts* (not elements) and
+leaving `includeInlays` off by default.
 
 ## Edge cases
 
 1. **File not open.** Both tools fail fast with `McpExpectedError("File not open:
-   <url>. Call open_file_in_editor first.")` — keeps the tools minimal and avoids
+   <url>. Call open_file_in_editor first.")` — keeps the tools minimal, avoids
    duplicating JetBrains' `open_file_in_editor` semantics.
 2. **`fileUrl=null` and no active tab.** Same error shape as `psi.*`:
    `"No active editor tab. Open a file first, or pass fileUrl from psi.list_open_files."`
 3. **Line/column or offset past EOF.** Clamp to last line / `document.textLength`,
    set `clamped=true`.
 4. **Both `offset` and `line`+`column` passed.** `offset` wins (documented).
-5. **Multiple editors per file (split view).** Use `FileEditorManager.selectedEditor`
-   for that file — most recently focused split. Per-split addressing is v2.
-6. **Binary file in editor (image viewer, Hex Editor).** `selectedTextEditor` is null;
-   fail with `"File is not a text editor: <url> (file type=<X>)"`.
-7. **Daemon hasn't run (file just opened, indexing).** `gutterMarkers` returns an
-   empty list — not null — so the caller distinguishes "no markers" from "couldn't
-   query".
-8. **Dumb mode.** Daemon highlights are limited but available; no `DumbService` gate.
+5. **Split view.** Use `FileEditorManager.selectedEditor` for that file — most
+   recently focused split. Per-split addressing is v2.
+6. **Binary file in editor (image, Hex).** `selectedTextEditor` is null; fail with
+   `"File is not a text editor: <url> (file type=<X>)"`.
+7. **Daemon hasn't run yet.** `gutterMarkers` is `[]` (not null) so the caller
+   distinguishes "no markers" from "couldn't query".
+8. **Dumb mode.** Daemon highlights limited but available; no `DumbService` gate.
    Folding and caret are dumb-safe.
 9. **Secondary carets with own selection.** Each `CaretInfo` carries its own
-   `selectionStart/End`; top-level `selection` reflects the primary caret only.
+   `selectionStart/End`; top-level `selection` is the primary caret only.
 10. **Folding lazy on first paint.** `allFoldRegions` can be empty on a never-shown
     file — acceptable.
 
@@ -285,21 +282,19 @@ timing is fiddly) ~2 h.
 ## Open questions / risks
 
 1. **`set_caret` accepts `offset` as well as line+column?** **Yes** — matches `psi.*`
-   precedent. Already in the signature.
-2. **`get_state` returns the current line's text content?** Recommend **yes, but
-   guarded** — add `includeCurrentLineText: Boolean = false` in v1.1; trivial
-   (`document.getText(lineStartOffset..lineEndOffset)`). Skip in v1 to keep responses
-   small and avoid duplicating text the agent likely has from `psi.get_structure`.
+   precedent; already in the signature.
+2. **`get_state` returns the current line's text content?** Recommend **yes, guarded** —
+   add `includeCurrentLineText: Boolean = false` in v1.1 (`document.getText(
+   lineStartOffset..lineEndOffset)`). Skip in v1 to keep responses small and avoid
+   duplicating text the agent likely has from `psi.get_structure`.
 3. **`editor.scroll_to(line)` as a third tool?** Cheap, but
    `set_caret(scrollToVisible=true)` covers the common case. Defer until requested.
-4. **`DaemonCodeAnalyzerImpl` is `@ApiStatus.Internal`.** If it breaks, swap to
-   `MarkupModelEx.processRangeHighlightersOverlappingWith` filtered by daemon-owned
-   tooltip renderer. Document the fallback in the Inspector.
-5. **Split-view targeting (v2).** Add optional `splitIndex: Int?` later if users
-   need it — would require `FileEditorManagerEx.windows` enumeration.
-6. **"Reversible" wording.** `set_caret` is not Ctrl-Z-reversible (caret moves
-   aren't undoable in IntelliJ); means "the caller can restore via a second tool
-   call using `oldOffset`".
+4. **`DaemonCodeAnalyzerImpl` is `@ApiStatus.Internal`.** If it breaks, swap to the
+   `MarkupModelEx` fallback noted above; document in the Inspector.
+5. **Split-view targeting (v2).** Add optional `splitIndex: Int?` later — would
+   require `FileEditorManagerEx.windows` enumeration.
+6. **"Reversible" wording.** Caret moves aren't Ctrl-Z-undoable in IntelliJ either;
+   we mean "the caller can restore via a second tool call using `oldOffset`".
 
 ## References
 
