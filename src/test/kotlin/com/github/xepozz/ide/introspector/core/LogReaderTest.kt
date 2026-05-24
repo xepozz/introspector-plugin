@@ -113,6 +113,74 @@ class LogReaderTest {
     }
 
     @Test
+    fun `regex catastrophic backtracking aborts within the deadline and leaks no thread`() {
+        // Regression test for Finding 2: the previous implementation spawned a daemon thread
+        // and called Thread.interrupt() on timeout — `Matcher.find()` doesn't check the
+        // interrupt flag, so the thread kept burning a CPU core for as long as the regex took.
+        // The InterruptibleCharSequence rewrite aborts the matcher inline, so:
+        //   (a) the call returns within a multiple of REGEX_LINE_TIMEOUT_MS (50 ms), AND
+        //   (b) no new daemon threads are alive afterwards.
+        val reader = newReader(
+            (0 until 50).joinToString("\n") {
+                "2026-05-24 14:30:00,000 [   1] INFO  - cat - " + "a".repeat(40)
+            } + "\n",
+        )
+        val threadsBefore = Thread.activeCount()
+        val t0 = System.nanoTime()
+        val resp = reader.tail(linesRequested = 100, regex = "(a+)+b")
+        val elapsedMs = (System.nanoTime() - t0) / 1_000_000L
+        // Loose ceiling — 50 lines × 50 ms = 2.5 s worst case + JIT warmup; budget 6 s.
+        assertTrue("ReDoS regex must abort within the deadline, took ${elapsedMs}ms", elapsedMs < 6_000L)
+        assertEquals("ReDoS matches must not pass the filter", 0, resp.lines.size)
+        // Best-effort thread leak check — no log-regex daemons should still be alive.
+        // We don't assert exact equality because JIT/GC/IDE-framework threads can spawn,
+        // but no daemon thread with name "log-regex" should exist (the old implementation
+        // would have left one per timed-out line).
+        val stillRunning = Thread.getAllStackTraces().keys.count { it.name == "log-regex" && it.isAlive }
+        assertEquals("no log-regex worker thread should survive the call", 0, stillRunning)
+        // Active count shouldn't have ballooned by ~50.
+        val threadsAfter = Thread.activeCount()
+        assertTrue(
+            "thread count grew by $threadsAfter - $threadsBefore — likely ReDoS thread leak",
+            threadsAfter - threadsBefore < 10,
+        )
+    }
+
+    @Test
+    fun `tail with severity filter keeps stacktrace continuation lines attached to matched ERROR`() {
+        // Regression test for Finding 3: the previous severity filter silently dropped
+        // continuation lines (parsed=false, no severity prefix) below a matched ERROR.
+        // The tool's @McpDescription promises continuations come through as parsed=false
+        // entries — so users filtering by severity must still receive the stack frames.
+        val reader = newReader(
+            """
+            |2026-05-24 14:30:00,000 [   1] INFO  - cat - just info
+            |2026-05-24 14:30:00,001 [   1] ERROR - cat - java.lang.NullPointerException: boom
+            |${"\t"}at com.foo.A.a(A.kt:1)
+            |${"\t"}at com.foo.B.b(B.kt:2)
+            |Caused by: java.io.IOException: disk
+            |${"\t"}at com.foo.X.x(X.kt:10)
+            |2026-05-24 14:30:01,000 [   1] INFO  - cat - life goes on
+            |
+            """.trimMargin(),
+        )
+        val resp = reader.tail(linesRequested = 100, severity = "WARN")
+        // Expect: ERROR header + 2 `\tat` + 1 `Caused by` + 1 `\tat` = 5 lines.
+        assertEquals(
+            "severity filter must keep continuation lines under a matched ERROR",
+            5, resp.lines.size,
+        )
+        assertEquals("ERROR", resp.lines[0].severity)
+        // Continuations are parsed=false and have null severity.
+        assertFalse(resp.lines[1].parsed)
+        assertTrue(resp.lines[1].raw.startsWith("\tat com.foo.A"))
+        assertFalse(resp.lines[2].parsed)
+        assertTrue(resp.lines[3].raw.startsWith("Caused by:"))
+        assertFalse(resp.lines[4].parsed)
+        assertTrue(resp.lines[4].raw.startsWith("\tat com.foo.X"))
+    }
+
+    @Test
     fun `invalid regex is silently ignored — all lines pass through`() {
         val reader = newReader(
             """

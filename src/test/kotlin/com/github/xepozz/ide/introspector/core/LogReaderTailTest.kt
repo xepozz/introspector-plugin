@@ -151,6 +151,66 @@ class LogReaderTailTest {
     }
 
     @Test
+    fun `errors_since reverse-seeks current log to find recent ERROR in a multi-MB file`() {
+        // Regression test for Finding 1: the previous implementation called readUpTo() which
+        // seeks to byte 0 and reads the FIRST 8 MB of every source. On a long-running IDE
+        // session that means `lastMinutes=5` parses day-1 history and never reaches recent
+        // entries. After the fix we reverse-seek the current log (1 MB tail), so a recent
+        // ERROR at the END of a multi-MB file MUST surface.
+        val file = ideaLogFile()
+        // ~5 MB of old INFO noise — well beyond MAX_TAIL_BYTES (1 MB). Old timestamps so
+        // they would dominate the previous forward-read.
+        val pad = " ".repeat(400)
+        Files.newBufferedWriter(file).use { w ->
+            for (i in 0 until 10_000) {
+                w.write("2026-05-24 10:00:00,000 [   1] INFO  - cat - old-line-%06d%s".format(i, pad))
+                w.newLine()
+            }
+            // The needle: a recent ERROR at the very end of the file.
+            w.write("2026-05-24 23:59:00,000 [   1] ERROR - cat - java.lang.RuntimeException: recent-boom")
+            w.newLine()
+        }
+        assertTrue("fixture must exceed MAX_TAIL_BYTES so the bug would trigger", Files.size(file) > LogReader.MAX_TAIL_BYTES)
+
+        val reader = LogReader(file)
+        val resp = reader.errorsSince(sinceIsoTimestamp = "2026-05-24T23:00:00", minSeverity = "WARN", limit = 100)
+        // With the bug we'd parse the first 8 MB of INFO noise and return 0 errors.
+        // After the fix we tail the last 1 MB and find the ERROR at the end.
+        assertEquals("recent ERROR at the file tail must surface", 1, resp.errors.size)
+        assertEquals("recent-boom", resp.errors[0].message)
+        assertEquals("java.lang.RuntimeException", resp.errors[0].throwableClass)
+    }
+
+    @Test
+    fun `errors_since does NOT walk rotations when current log already covers the cutoff`() {
+        // Sanity: with the fix's "walk rotations only when cutoff predates current" gating,
+        // a small current log whose oldest line predates the cutoff must NOT trigger a
+        // rotation walk. We supply a poisoned rotation supplier that throws if called — if
+        // it executes the test fails.
+        val main = ideaLogFile()
+        Files.writeString(
+            main,
+            """
+            |2026-05-24 13:00:00,000 [   1] INFO  - cat - older-info
+            |2026-05-24 14:30:00,000 [   1] ERROR - cat - java.lang.RuntimeException: now
+            |
+            """.trimMargin(),
+        )
+        var rotationCalled = false
+        val reader = LogReader(main, rotationFiles = {
+            rotationCalled = true
+            error("rotation walk should not run — current log already covers cutoff")
+        })
+        val resp = reader.errorsSince(sinceIsoTimestamp = "2026-05-24T14:00:00", minSeverity = "WARN", limit = 100)
+        assertEquals(1, resp.errors.size)
+        assertEquals("now", resp.errors[0].message)
+        // `rotationFiles` may safely be called once for `runCatching {…}.getOrElse {}` defence
+        // — the assertion is that NO actual walk was attempted because shouldWalkRotations
+        // returns false.
+        assertFalse("rotationFiles supplier must not be invoked", rotationCalled)
+    }
+
+    @Test
     fun `errors_since respects 8 MB cumulative rotation budget`() {
         // 4 × 3 MB rotation files = 12 MB total; budget is 8 MB → must stop scanning early.
         val main = ideaLogFile()

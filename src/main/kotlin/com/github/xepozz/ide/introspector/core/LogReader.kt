@@ -15,7 +15,6 @@ import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.regex.Pattern
 import java.util.regex.PatternSyntaxException
-import kotlin.concurrent.thread
 
 /**
  * Pure-I/O log reader for the IDE's own `idea.log`. Tails efficiently — for the common
@@ -75,13 +74,21 @@ class LogReader(
         val parsed = cleanLines.map { parseLine(it) }
         val totalScanned = parsed.size
 
+        // When a severity filter is set, a multi-line stacktrace under an ERROR has continuation
+        // lines (parsed=false, no severity prefix) that would be silently dropped by the filter.
+        // The tool description promises continuations come through as `parsed=false` entries; the
+        // user-visible value is the stack frames under their matched header. Mark, in forward
+        // order, every continuation that follows a header passing the severity filter so the
+        // downstream reverse-walk keeps it alongside the header.
+        val keepIndices = computeKeepIndices(parsed, categoryContains, minSeverityIdx, compiledRegex)
+
         val redactionState = RedactionState()
-        val filtered = parsed.asReversed().asSequence()
-            .filter { lineMatchesFilters(it, categoryContains, minSeverityIdx, compiledRegex) }
+        val filtered = parsed.withIndex().toList().asReversed().asSequence()
+            .filter { it.index in keepIndices }
             .take(cappedLines)
             .toList()
             .asReversed()
-            .map { redactLine(it, redactionState) }
+            .map { redactLine(it.value, redactionState) }
 
         return capLogTailResponseBytes(
             LogTailResponse(
@@ -121,31 +128,59 @@ class LogReader(
         val cutoff = parseCutoff(sinceIsoTimestamp, lastMinutes)
         val sinceOut = sinceIsoTimestamp ?: ISO.format(cutoff)
 
-        val sources = collectErrorSources()
-        if (sources.isEmpty()) {
+        // Reverse-seek the current log first — on a 60 MB idea.log a `lastMinutes=5` query
+        // hits recent entries in <50 ms by reading only the trailing 1 MB. We then walk
+        // rotations newest-first ONLY if the tail's oldest parsed timestamp is still after
+        // the cutoff (i.e. the cutoff predates what we've seen). Forward-from-byte-0 reads
+        // would parse day-1 history and never reach recent entries before hitting the 8 MB
+        // cap — see Finding 1 in docs/reviews/log-group.md.
+        val allLines = mutableListOf<LogLine>()
+        var byteBudget = MAX_ROTATION_BYTES
+        var truncatedBudget = false
+
+        val mainExists = Files.isRegularFile(logFile)
+        val mainTail = if (mainExists) readTail(logFile, MAX_TAIL_BYTES) else null
+        if (mainTail != null) {
+            byteBudget -= mainTail.bytesRead
+            if (mainTail.truncated) truncatedBudget = true
+            val rawSplit = mainTail.text.split('\n')
+            // Drop the (possibly partial) first chunk only when we landed mid-file.
+            val candidate = if (mainTail.truncated && rawSplit.isNotEmpty()) rawSplit.drop(1) else rawSplit
+            for (raw in candidate) {
+                if (raw.isEmpty()) continue
+                allLines += parseLine(raw)
+            }
+        }
+
+        if (shouldWalkRotations(allLines, cutoff, mainTail?.truncated == true)) {
+            // Read rotations newest-first (`.1`, `.2`, …) and PREPEND each batch so the final
+            // list stays chronological (oldest first).
+            val rotations = runCatching { rotationFiles().take(MAX_ROTATIONS) }.getOrElse { emptyList() }
+            for (rot in rotations) {
+                if (byteBudget <= 0) { truncatedBudget = true; break }
+                val rotTail = readTail(rot, minOf(byteBudget, MAX_TAIL_BYTES)) ?: continue
+                byteBudget -= rotTail.bytesRead
+                if (rotTail.truncated) truncatedBudget = true
+                val rawSplit = rotTail.text.split('\n')
+                val candidate = if (rotTail.truncated && rawSplit.isNotEmpty()) rawSplit.drop(1) else rawSplit
+                val prepended = ArrayList<LogLine>(candidate.size)
+                for (raw in candidate) {
+                    if (raw.isEmpty()) continue
+                    prepended += parseLine(raw)
+                }
+                allLines.addAll(0, prepended)
+                // If this rotation's earliest parsed line is still after the cutoff, keep walking.
+                if (!shouldWalkRotations(allLines, cutoff, rotTail.truncated)) break
+            }
+        }
+
+        if (allLines.isEmpty() && !mainExists) {
             return LogErrorsSinceResponse(
                 since = sinceOut,
                 errors = emptyList(),
                 total = 0,
                 truncated = false,
             )
-        }
-
-        val allLines = mutableListOf<LogLine>()
-        var byteBudget = MAX_ROTATION_BYTES
-        var truncatedBudget = false
-        for (src in sources) {
-            if (byteBudget <= 0) {
-                truncatedBudget = true
-                break
-            }
-            val text = readUpTo(src, byteBudget) ?: continue
-            byteBudget -= text.bytesRead
-            if (text.truncated) truncatedBudget = true
-            for (line in text.text.split('\n')) {
-                if (line.isEmpty()) continue
-                allLines += parseLine(line)
-            }
         }
 
         val grouped = if (groupByThrowable) groupThrowables(allLines, minIdx) else linesAsEntries(allLines, minIdx)
@@ -175,11 +210,22 @@ class LogReader(
     // Internals
     // ------------------------------------------------------------------------------------
 
-    private fun collectErrorSources(): List<Path> {
-        val main = if (Files.isRegularFile(logFile)) listOf(logFile) else emptyList()
-        val rotations = runCatching { rotationFiles().take(MAX_ROTATIONS) }.getOrElse { emptyList() }
-        // Oldest first so the resulting List<LogLine> is naturally chronological.
-        return rotations.reversed() + main
+    /**
+     * Walk rotations only when the data we have doesn't yet cover [cutoff] — i.e. when the
+     * earliest parsed timestamp in [lines] is still strictly after the cutoff. Empty/parse-
+     * less data means walk (we don't know what we have). Once we've seen a timestamp ≤
+     * cutoff we know rotations contain only older entries the caller doesn't want.
+     *
+     * Note: if the most recent file read was itself truncated (file > 1 MB tail), older
+     * entries from the SAME file are silently dropped — that's reflected in
+     * `truncatedBudget=true` at the caller, not by chasing rotations.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    private fun shouldWalkRotations(lines: List<LogLine>, cutoff: LocalDateTime, lastReadTruncated: Boolean): Boolean {
+        val earliest = lines.asSequence()
+            .mapNotNull { it.timestamp?.let(::tryParseLogTimestamp) }
+            .firstOrNull() ?: return true
+        return earliest.isAfter(cutoff)
     }
 
     private data class TailRead(val text: String, val truncated: Boolean, val bytesRead: Int)
@@ -218,33 +264,6 @@ class LogReader(
         }
     }
 
-    /** Read whole-file (up to [maxBytes]) for rotation walking — we always read from offset 0. */
-    private fun readUpTo(file: Path, maxBytes: Int): TailRead? {
-        if (!Files.isRegularFile(file)) return null
-        return try {
-            RandomAccessFile(file.toFile(), "r").use { raf ->
-                val len = raf.length()
-                val read = minOf(len, maxBytes.toLong()).toInt()
-                val truncated = len > maxBytes
-                val buf = ByteArray(read)
-                var off = 0
-                while (off < read) {
-                    val n = raf.read(buf, off, read - off)
-                    if (n < 0) break
-                    off += n
-                }
-                val actualBytes = if (off == read) buf else buf.copyOf(off)
-                TailRead(String(actualBytes, StandardCharsets.UTF_8), truncated, off)
-            }
-        } catch (_: AccessDeniedException) {
-            TailRead("<permission denied: $file>", false, 0)
-        } catch (_: NoSuchFileException) {
-            null
-        } catch (_: IOException) {
-            null
-        }
-    }
-
     private fun lineMatchesFilters(
         line: LogLine,
         categoryContains: String?,
@@ -263,6 +282,39 @@ class LogReader(
             if (!regexFindWithTimeout(regex, line.raw)) return false
         }
         return true
+    }
+
+    /**
+     * Walks [parsed] forward and returns the set of indices that should appear in the response:
+     * any line that matches the filters, plus the stacktrace-continuation lines (`\tat …`,
+     * `Caused by …`, indented continuations) that immediately follow it. Continuations alone
+     * never pass the severity filter — they have no severity prefix — so without this sticky
+     * pass the user sees `ERROR foo.Bar: boom` with zero stack frames.
+     */
+    private fun computeKeepIndices(
+        parsed: List<LogLine>,
+        categoryContains: String?,
+        minSeverityIdx: Int,
+        regex: Pattern?,
+    ): Set<Int> {
+        val keep = HashSet<Int>(parsed.size)
+        var i = 0
+        while (i < parsed.size) {
+            if (lineMatchesFilters(parsed[i], categoryContains, minSeverityIdx, regex)) {
+                keep += i
+                // Sticky-attach following continuations so multi-line stacktraces survive the
+                // severity filter. Stop at the next parsed (timestamped) line.
+                var j = i + 1
+                while (j < parsed.size && isContinuation(parsed[j])) {
+                    keep += j
+                    j++
+                }
+                i = j
+            } else {
+                i++
+            }
+        }
+        return keep
     }
 
     // ------------------------------------------------------------------------------------
@@ -394,23 +446,44 @@ class LogReader(
 
     /**
      * `Pattern.matcher(s).find()` is uninterruptible on a regular thread, so a catastrophic
-     * pattern like `(a+)+b` against an all-a's line can hang for minutes. We run the find in
-     * a daemon thread, wait [REGEX_LINE_TIMEOUT_MS] ms, and on timeout return `false` (non-match)
-     * — better to silently drop one suspect filter than to lock up the IDE.
+     * pattern like `(a+)+b` against an all-a's line can hang for minutes. `Thread.interrupt()`
+     * doesn't help — `Matcher` never checks the flag. We wrap the input in
+     * [InterruptibleCharSequence] which throws after [REGEX_LINE_TIMEOUT_MS] ms; the matcher
+     * reads characters in its hot loop, so the throw escapes within microseconds. No threads,
+     * no leak. Pattern after https://www.ocpsoft.org/regex/how-to-interrupt-a-long-running-infinite-java-regular-expression/.
      */
     private fun regexFindWithTimeout(pattern: Pattern, input: String): Boolean {
-        val result = java.util.concurrent.atomic.AtomicReference<Boolean?>()
-        val matcher = pattern.matcher(input)
-        val t = thread(start = true, isDaemon = true, name = "log-regex") {
-            result.set(runCatching { matcher.find() }.getOrElse { false })
+        val wrapped = InterruptibleCharSequence(input, System.nanoTime() + REGEX_LINE_TIMEOUT_MS * 1_000_000L)
+        val matcher = pattern.matcher(wrapped)
+        return try {
+            matcher.find()
+        } catch (_: RegexTimeoutException) {
+            false
         }
-        t.join(REGEX_LINE_TIMEOUT_MS)
-        if (t.isAlive) {
-            // Best-effort cancel — Matcher exposes `interrupt()` only via `Thread.interrupt()`.
-            t.interrupt()
-            return false
+    }
+
+    private class RegexTimeoutException : RuntimeException() {
+        override fun fillInStackTrace(): Throwable = this // avoid stack-fill cost on the hot path
+    }
+
+    /**
+     * `CharSequence` that throws [RegexTimeoutException] from `charAt()` once the deadline
+     * has passed. `Matcher` reads characters via `charAt()` in its inner loop, so a runaway
+     * `find()` aborts within microseconds of the deadline — no extra threads, no CPU leak.
+     */
+    private class InterruptibleCharSequence(
+        private val inner: CharSequence,
+        private val deadlineNanos: Long,
+    ) : CharSequence {
+        override val length: Int get() = inner.length
+        override fun get(index: Int): Char {
+            // Cheap check — `System.nanoTime()` is ~25 ns on modern JVMs.
+            if (System.nanoTime() > deadlineNanos) throw RegexTimeoutException()
+            return inner[index]
         }
-        return result.get() == true
+        override fun subSequence(startIndex: Int, endIndex: Int): CharSequence =
+            InterruptibleCharSequence(inner.subSequence(startIndex, endIndex), deadlineNanos)
+        override fun toString(): String = inner.toString()
     }
 
     private fun compileRegexQuietly(regex: String?): Pattern? {
