@@ -9,5 +9,6 @@
         <mcpServer.mcpToolset implementation="com.github.xepozz.ide.introspector.tools.PsiToolset"/>
         <mcpServer.mcpToolset implementation="com.github.xepozz.ide.introspector.tools.HealthToolset"/>
         <mcpServer.mcpToolset implementation="com.github.xepozz.ide.introspector.tools.EditorToolset"/>
+        <mcpServer.mcpToolset implementation="com.github.xepozz.ide.introspector.tools.LogToolset"/>
     </extensions>
 </idea-plugin>
