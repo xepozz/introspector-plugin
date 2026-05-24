@@ -70,7 +70,11 @@ object PsiHierarchyResolver {
         val warnings = ArrayList<String>()
         val psiClass = resolveClassTarget(project, target, psiFile, offset)
         val classRef = describeClass(psiClass)
-        val effectiveScope = globalScope(project, scopeKind)
+        // When the caller supplied a position (no FQN), honour scope="file" by anchoring to
+        // that file. When the caller used an FQN, scope="file" only makes sense if the resolved
+        // class's own file can serve as the anchor — fall back to that.
+        val anchorFile = psiFile ?: psiClass.containingFile
+        val effectiveScope = searchScopeForFile(anchorFile, scopeKind, project)
         if (scopeKind == "all") {
             warnings += "scope=\"all\" includes library sources — searches on hot types " +
                 "(java.util.List, java.lang.Object) can saturate the 10s read-action timeout. " +
@@ -138,7 +142,7 @@ object PsiHierarchyResolver {
 
     private fun walkSubtypes(
         root: PsiClass,
-        scope: GlobalSearchScope,
+        scope: SearchScope,
         maxDepth: Int,
         budget: NodeBudget,
     ): HierarchyNode {
@@ -181,7 +185,7 @@ object PsiHierarchyResolver {
         return build(root, 0)
     }
 
-    private fun hasAnyDirectInheritor(cls: PsiClass, scope: GlobalSearchScope): Boolean {
+    private fun hasAnyDirectInheritor(cls: PsiClass, scope: SearchScope): Boolean {
         var found = false
         try {
             ClassInheritorsSearch.search(cls, scope, /*checkDeep=*/false).forEach(Processor { _ ->
@@ -207,7 +211,7 @@ object PsiHierarchyResolver {
     ): GotoImplementationResponse {
         val warnings = ArrayList<String>()
         val target = resolveClassOrMethodTarget(psiFile, offset)
-        val effectiveScope = globalScope(project, scopeKind)
+        val effectiveScope = searchScopeForFile(psiFile, scopeKind, project)
         if (scopeKind == "all") {
             warnings += "scope=\"all\" includes library sources — searches on hot symbols can " +
                 "saturate the 10s read-action timeout. Narrow to scope=\"project\" if results time out."
@@ -491,21 +495,18 @@ object PsiHierarchyResolver {
         return false
     }
 
-    private fun globalScope(project: Project, kind: String): GlobalSearchScope = when (kind) {
-        "file" -> {
-            // file-scope hierarchy is rarely useful; project semantics fall back to projectScope
-            // when there's no anchor file — handled by callers that pass a PsiFile in.
-            GlobalSearchScope.projectScope(project)
-        }
+    /**
+     * Translate the user-facing scope kind into a [SearchScope].
+     *
+     * `"file"` requires an anchor [PsiFile] — when one is supplied we use
+     * [GlobalSearchScope.fileScope]; if the caller couldn't supply one (e.g. FQN lookup
+     * without a containing file) we degrade to project scope so the search still produces
+     * useful results rather than nothing.
+     */
+    fun searchScopeForFile(file: PsiFile?, scopeKind: String, project: Project): SearchScope = when (scopeKind) {
+        "file" -> if (file != null) GlobalSearchScope.fileScope(file) else GlobalSearchScope.projectScope(project)
         "all"  -> GlobalSearchScope.allScope(project)
         else   -> GlobalSearchScope.projectScope(project)
-    }
-
-    fun searchScopeForFile(file: PsiFile?, scopeKind: String, project: Project): SearchScope {
-        if (scopeKind == "file" && file != null) {
-            return GlobalSearchScope.fileScope(file)
-        }
-        return globalScope(project, scopeKind)
     }
 
     private fun lineSnippetOf(document: Document?, offset: Int, max: Int): String {
